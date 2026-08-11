@@ -1,0 +1,7 @@
+node_modules/
+packages/*/dist/
+packages/*/*.tsbuildinfo
+.primecontext/
+coverage/
+.DS_Store
+*.log

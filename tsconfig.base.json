@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "composite": true,
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@primecontext/schemas": ["packages/schemas/src/index.ts"],
+      "@primecontext/core": ["packages/core/src/index.ts"],
+      "@primecontext/adapters": ["packages/adapters/src/index.ts"],
+      "@primecontext/repo-map": ["packages/repo-map/src/index.ts"],
+      "@primecontext/benchmark": ["packages/benchmark/src/index.ts"]
+    }
+  }
+}
