@@ -124,3 +124,32 @@ export interface GitPort {
 export interface MetricSink {
   record(metric: MetricRecord): Promise<void>;
 }
+
+export type RepoModuleKind = 'workspace_package' | 'source' | 'tests' | 'documentation' | 'configuration' | 'examples' | 'benchmarks' | 'other';
+
+export interface RepoModule {
+  id: string;
+  path: string;
+  kind: RepoModuleKind;
+  role: string;
+  evidence: string[];
+}
+
+export interface RepositoryIdentity {
+  root: string;
+  name: string;
+  branch?: string;
+  head?: string;
+}
+
+export interface SemanticRepoMap {
+  schema_version: '0.1';
+  generated_at: string;
+  repository: RepositoryIdentity;
+  modules: RepoModule[];
+  summary: {
+    module_count: number;
+    discovered_path_count: number;
+    excluded_path_count: number;
+  };
+}
