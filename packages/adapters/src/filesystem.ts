@@ -6,6 +6,19 @@ import { assertPathInsideRoot, isSensitivePath } from './security.js';
 const DEFAULT_MAX_READ_BYTES = 1024 * 1024;
 
 export class NodeFileSystemAdapter implements FileSystemPort {
+  private readonly additionalExcludes: string[];
+
+  constructor(additionalExcludes: string[] = []) {
+    this.additionalExcludes = additionalExcludes
+      .map((path) => path.replaceAll('\\', '/').replace(/^\.\//, '').replace(/\/$/, ''))
+      .filter(Boolean);
+  }
+
+  private isConfiguredExcluded(relativePath: string): boolean {
+    const normalized = relativePath.replaceAll('\\', '/');
+    return this.additionalExcludes.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`));
+  }
+
   async walk(root: string): Promise<WalkResult> {
     const resolvedRoot = resolve(root);
     const paths: DiscoveredPath[] = [];
@@ -17,7 +30,7 @@ export class NodeFileSystemAdapter implements FileSystemPort {
       for (const entry of entries) {
         const absolutePath = resolve(absoluteDir, entry.name);
         const relativePath = relative(resolvedRoot, absolutePath).replaceAll('\\', '/');
-        if (isSensitivePath(relativePath) || entry.isSymbolicLink()) {
+        if (isSensitivePath(relativePath) || this.isConfiguredExcluded(relativePath) || entry.isSymbolicLink()) {
           excludedPathCount += 1;
           continue;
         }

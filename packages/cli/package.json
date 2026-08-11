@@ -1,0 +1,17 @@
+{
+  "name": "@primecontext/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {"primecontext": "./dist/bin.js"},
+  "exports": {".": "./dist/index.js"},
+  "dependencies": {
+    "@primecontext/adapters": "0.1.0",
+    "@primecontext/benchmark": "0.1.0",
+    "@primecontext/core": "0.1.0",
+    "@primecontext/repo-map": "0.1.0",
+    "@primecontext/schemas": "0.1.0"
+  }
+}

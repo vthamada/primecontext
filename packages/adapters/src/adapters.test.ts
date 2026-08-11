@@ -48,3 +48,14 @@ test('Git adapter reports branch and head when available', async () => {
   assert.equal(state?.branch, 'main');
   assert.match(state?.head ?? '', /^[a-f0-9]{40}$/);
 });
+
+
+test('walk honors configured repository-relative exclude prefixes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'primecontext-exclude-'));
+  await mkdir(join(root, 'generated-private'));
+  await writeFile(join(root, 'generated-private', 'payload.json'), '{}');
+  await writeFile(join(root, 'visible.txt'), 'ok');
+  const result = await new NodeFileSystemAdapter(['generated-private']).walk(root);
+  assert.equal(result.paths.some((item) => item.relative_path.startsWith('generated-private')), false);
+  assert.ok(result.paths.some((item) => item.relative_path === 'visible.txt'));
+});
