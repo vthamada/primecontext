@@ -14,10 +14,10 @@
     "typecheck": "tsc -b --pretty false",
     "test": "npm run build && node --test packages/*/dist/*.test.js",
     "check": "npm run typecheck && npm test",
-    "cli": "tsx packages/cli/src/bin.ts"
+    "cli": "node packages/cli/dist/bin.js"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.8.3"
   }
 }
