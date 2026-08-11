@@ -1,0 +1,37 @@
+{
+  "schema_version": "0.1",
+  "state_dir": ".primecontext",
+  "exclude": [],
+  "budgets": {
+    "small_ui": {
+      "initial_tokens": 3000,
+      "soft_limit_tokens": 6000,
+      "hard_limit_tokens": 12000
+    },
+    "small_code_fix": {
+      "initial_tokens": 4000,
+      "soft_limit_tokens": 8000,
+      "hard_limit_tokens": 16000
+    },
+    "module_feature": {
+      "initial_tokens": 6000,
+      "soft_limit_tokens": 12000,
+      "hard_limit_tokens": 24000
+    },
+    "integration": {
+      "initial_tokens": 8000,
+      "soft_limit_tokens": 16000,
+      "hard_limit_tokens": 32000
+    },
+    "qa": {
+      "initial_tokens": 6000,
+      "soft_limit_tokens": 12000,
+      "hard_limit_tokens": 24000
+    },
+    "orchestration": {
+      "initial_tokens": 10000,
+      "soft_limit_tokens": 20000,
+      "hard_limit_tokens": 40000
+    }
+  }
+}

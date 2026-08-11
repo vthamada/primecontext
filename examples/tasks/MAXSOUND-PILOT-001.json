@@ -1,0 +1,24 @@
+{
+  "task_id": "MAXSOUND-PILOT-001",
+  "goal": "Prepare bounded implementation context for immutable proposal versioning in the reference application",
+  "task_type": "module_feature",
+  "module": "proposal",
+  "priority": "P1",
+  "boundaries": {
+    "allowed_paths": ["src/Proposal", "tests"],
+    "forbidden_paths": ["private", ".env"]
+  },
+  "decisions": [
+    {
+      "source": "docs/proposal-versioning.md",
+      "summary": "Proposal versions are immutable after persistence."
+    }
+  ],
+  "documents": ["docs/proposal-versioning.md"],
+  "code_targets": ["ProposalService"],
+  "acceptance": [
+    "The generated Task Capsule validates against the v0.1 contract",
+    "The capsule contains only sanitized repository context references",
+    "No MaxSound commercial rule is required by PrimeContext Core"
+  ]
+}

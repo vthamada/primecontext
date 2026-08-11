@@ -1,0 +1,6 @@
+{
+  "name": "primecontext-sample-project",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Small repository fixture used to exercise PrimeContext v0.1"
+}
