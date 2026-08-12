@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://primecontext.dev/schemas/v0.2/document-search-result.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "catalog_digest",
+    "query",
+    "terms",
+    "effective_filters",
+    "hits",
+    "conflicts",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "0.2"
+    },
+    "catalog_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "terms": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 8192
+      }
+    },
+    "effective_filters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "authorities": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "policy",
+              "adr",
+              "specification",
+              "contract_schema",
+              "roadmap",
+              "implementation_note",
+              "generated_summary"
+            ]
+          }
+        },
+        "modules": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "topics": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      },
+      "required": [
+        "authorities",
+        "modules",
+        "topics"
+      ]
+    },
+    "hits": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "document_id",
+          "path",
+          "title",
+          "authority",
+          "source_hash",
+          "score",
+          "matched_fields",
+          "matched_terms",
+          "excerpt"
+        ],
+        "properties": {
+          "document_id": {
+            "type": "string",
+            "pattern": "^DOC-[0-9a-f]{64}$"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^(?!/)(?!.*\\\\)(?!.*:)(?!.*[<>\"|?*])(?!.*//)(?!\\.{1,2}(?:/|$))(?!.*\\/\\.{1,2}(?:/|$))(?!.*(?:^|/)(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9¹²³]|[Ll][Pp][Tt][1-9¹²³])[ .]*(?:\\.|/|$))(?!.*[. ](?:/|$))[^\\u0000-\\u001f\\u007f-\\u009f]+\\.[Mm][Dd]$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "\\S"
+          },
+          "authority": {
+            "enum": [
+              "policy",
+              "adr",
+              "specification",
+              "contract_schema",
+              "roadmap",
+              "implementation_note",
+              "generated_summary"
+            ]
+          },
+          "source_hash": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "score": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "matched_fields": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 5,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "title",
+                "path",
+                "module",
+                "topic",
+                "body"
+              ]
+            }
+          },
+          "matched_terms": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 8192
+            }
+          },
+          "excerpt": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "text",
+              "start_line",
+              "end_line",
+              "truncated"
+            ],
+            "properties": {
+              "text": {
+                "type": "string",
+                "maxLength": 400
+              },
+              "start_line": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "end_line": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "$comment": "end_line must be >= start_line and cover at most six source lines; enforced by the runtime validator."
+          }
+        }
+      }
+    },
+    "conflicts": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "normalized_title",
+          "document_ids"
+        ],
+        "properties": {
+          "normalized_title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "document_ids": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 4096,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^DOC-[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "catalog_document_count",
+        "filtered_document_count",
+        "matched_document_count",
+        "returned_hit_count",
+        "truncated"
+      ],
+      "properties": {
+        "catalog_document_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "filtered_document_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "matched_document_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "returned_hit_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 50
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "$comment": "Counts, truncation, hit ordering, term membership, and conflicts are enforced by the runtime validator."
+    }
+  }
+}

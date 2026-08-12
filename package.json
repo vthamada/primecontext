@@ -10,8 +10,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc -b",
-    "typecheck": "tsc -b --pretty false",
+    "build": "tsc -b && npm run contracts:generate --workspace @primecontext/schemas",
+    "typecheck": "tsc -b --pretty false && npm run contracts:check --workspace @primecontext/schemas",
     "test": "npm run build && node --test packages/*/dist/*.test.js",
     "check": "npm run typecheck && npm test",
     "cli": "node packages/cli/dist/bin.js"

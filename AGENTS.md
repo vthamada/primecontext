@@ -4,11 +4,20 @@
 
 PrimeContext is context-engineering infrastructure, not a coding agent, SaaS platform, project manager, vector database, or MaxSound-specific application.
 
-## v0.1 scope
+## Active implementation scope
 
-Implement only the foundations defined in `docs/specification/product-architecture-specification-v0.1.md` and `docs/architecture/v0.1-implementation-architecture.md`.
+The v0.1 foundations remain the compatibility baseline.
 
-Do not introduce MCP, CodeGraph as a hard dependency, embeddings, vector databases, hosted services, web UI, automatic multi-agent orchestration, or adaptive memory into v0.1.
+The only authorized v0.2 slice is defined in:
+
+- `docs/specification/document-retrieval-specification-v0.2.md`;
+- `docs/architecture/v0.2-document-retrieval-architecture.md`.
+
+This slice is limited to a local Markdown Document Catalog and bounded, deterministic local lexical search with source authority, provenance, freshness checks, security exclusions, tests, and CLI documentation.
+
+Do not introduce MCP, any CodeGraph integration, embeddings, vector databases, SQLite/FTS, hosted services, web UI, Context Scout, general context ranking or pruning, automatic multi-agent orchestration, AI-generated summaries, snapshots, adaptive memory, or remote telemetry in this slice.
+
+Preserve every v0.1 contract and behavior. Keep Document Catalog and lexical retrieval as modules inside the existing package boundaries until an ADR demonstrates that another package or storage engine is justified.
 
 ## Engineering rules
 

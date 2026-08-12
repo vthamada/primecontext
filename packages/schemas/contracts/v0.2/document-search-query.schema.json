@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://primecontext.dev/schemas/v0.2/document-search-query.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "query"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "0.2"
+    },
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "filters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "authorities": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "policy",
+              "adr",
+              "specification",
+              "contract_schema",
+              "roadmap",
+              "implementation_note",
+              "generated_summary"
+            ]
+          }
+        },
+        "modules": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "topics": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      }
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+    }
+  },
+  "$comment": "Query UTF-8 bytes and distinct normalized terms are bounded by the runtime validator."
+}

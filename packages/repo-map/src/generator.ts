@@ -21,6 +21,10 @@ function moduleId(kind: RepoModuleKind, path: string, name?: string): string {
   return raw.replace(/[^a-z0-9@/_:.-]+/g, '-');
 }
 
+function ordinalCompare(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 async function packageModule(root: string, manifestPath: string, fsPort: FileSystemPort): Promise<RepoModule | undefined> {
   try {
     const content = await fsPort.readText(root, manifestPath, 512 * 1024);
@@ -68,7 +72,7 @@ export async function generateRepoMap(root: string, fsPort: FileSystemPort, gitP
     });
   }
 
-  const sortedModules = [...modules.values()].sort((a, b) => a.path.localeCompare(b.path));
+  const sortedModules = [...modules.values()].sort((a, b) => ordinalCompare(a.path, b.path));
   const map: SemanticRepoMap = {
     schema_version: '0.1',
     generated_at: new Date().toISOString(),

@@ -5,5 +5,21 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": {".": "./dist/index.js"}
+  "files": ["dist", "contracts", "scripts", "!dist/*.test.*"],
+  "scripts": {
+    "contracts:generate": "node ./scripts/generate-contracts.mjs",
+    "contracts:check": "node ./scripts/generate-contracts.mjs --check"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./contracts/v0.1/compact-handoff.schema.json": "./contracts/v0.1/compact-handoff.schema.json",
+    "./contracts/v0.1/context-budget.schema.json": "./contracts/v0.1/context-budget.schema.json",
+    "./contracts/v0.1/metric-record.schema.json": "./contracts/v0.1/metric-record.schema.json",
+    "./contracts/v0.1/primecontext-config.schema.json": "./contracts/v0.1/primecontext-config.schema.json",
+    "./contracts/v0.1/semantic-repo-map.schema.json": "./contracts/v0.1/semantic-repo-map.schema.json",
+    "./contracts/v0.1/task-capsule.schema.json": "./contracts/v0.1/task-capsule.schema.json",
+    "./contracts/v0.2/document-catalog.schema.json": "./contracts/v0.2/document-catalog.schema.json",
+    "./contracts/v0.2/document-search-query.schema.json": "./contracts/v0.2/document-search-query.schema.json",
+    "./contracts/v0.2/document-search-result.schema.json": "./contracts/v0.2/document-search-result.schema.json"
+  }
 }

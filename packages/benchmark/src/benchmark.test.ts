@@ -18,6 +18,7 @@ test('reports deterministic B minus A raw deltas and estimate propagation', () =
   assert.equal(result.deltas.input_tokens, -800);
   assert.equal(result.deltas.tool_calls, -4);
   assert.deepEqual(result.estimated_fields, ['input_tokens']);
+  assert.deepEqual(result.measurement_gaps, ['completion_status']);
   assert.equal(result.quality_gate, 'PASS');
   assert.equal(result.interpretation, 'COMPARABLE_EVIDENCE');
 });
@@ -30,6 +31,17 @@ test('quality regression blocks favorable efficiency interpretation', () => {
   assert.equal(result.deltas.input_tokens, -1000);
   assert.equal(result.quality_gate, 'FAIL');
   assert.equal(result.interpretation, 'QUALITY_REGRESSION');
+  assert.deepEqual(result.measurement_gaps, ['completion_status']);
+});
+
+test('an available completion failure in arm B blocks a favorable verdict', () => {
+  const result = compareBenchmarkArms(
+    { ...base, arm: 'A', input_tokens: 2000, completion_status: 'PASS' },
+    { ...base, arm: 'B', input_tokens: 1000, completion_status: 'FAIL' },
+  );
+  assert.equal(result.quality_gate, 'FAIL');
+  assert.equal(result.interpretation, 'QUALITY_REGRESSION');
+  assert.deepEqual(result.measurement_gaps, []);
 });
 
 test('unknown validation evidence remains inconclusive', () => {
@@ -39,4 +51,25 @@ test('unknown validation evidence remains inconclusive', () => {
   );
   assert.equal(result.quality_gate, 'UNKNOWN');
   assert.equal(result.interpretation, 'INSUFFICIENT_QUALITY_EVIDENCE');
+});
+
+test('passing quality statuses are insufficient without any comparable numeric evidence', () => {
+  const result = compareBenchmarkArms(
+    { ...base, arm: 'A' },
+    { ...base, arm: 'B' },
+  );
+  assert.deepEqual(result.deltas, {});
+  assert.equal(result.quality_gate, 'UNKNOWN');
+  assert.equal(result.interpretation, 'INSUFFICIENT_QUALITY_EVIDENCE');
+});
+
+test('rejects mismatched tasks and mislabeled arms with benchmark errors', () => {
+  assert.throws(() => compareBenchmarkArms(
+    { ...base, arm: 'A' },
+    { ...base, task_id: 'OTHER', arm: 'B' },
+  ), /BENCHMARK_ERROR/);
+  assert.throws(() => compareBenchmarkArms(
+    { ...base, arm: 'B' },
+    { ...base, arm: 'A' },
+  ), /BENCHMARK_ERROR/);
 });

@@ -1,5 +1,7 @@
 const draft = 'https://json-schema.org/draft/2020-12/schema';
 
+export const taskIdPattern = '^(?!(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])(?:\\.|(?![\\s\\S])))[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?(?![\\s\\S])';
+
 export const taskTypes = [
   'small_ui',
   'small_code_fix',
@@ -22,21 +24,28 @@ export const metricNumericFields = [
   'rework_count',
 ] as const;
 
-const stringArray = { type: 'array', items: { type: 'string' } } as const;
-const nonNegativeInteger = { type: 'integer', minimum: 0 } as const;
-const positiveInteger = { type: 'integer', minimum: 1 } as const;
+const nonEmptyString = { type: 'string', minLength: 1 } as const;
+const taskIdString = { ...nonEmptyString, maxLength: 128, pattern: taskIdPattern } as const;
+const stringArray = { type: 'array', items: nonEmptyString } as const;
+const nonNegativeInteger = { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER } as const;
+const positiveInteger = { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER } as const;
 
-export const contextBudgetSchema = {
-  $schema: draft,
-  $id: 'https://primecontext.dev/schemas/v0.1/context-budget.schema.json',
+const contextBudgetContract = {
   type: 'object',
   additionalProperties: false,
   required: ['initial_tokens', 'soft_limit_tokens', 'hard_limit_tokens'],
+  $comment: 'initial_tokens <= soft_limit_tokens <= hard_limit_tokens; enforced by the runtime validator.',
   properties: {
     initial_tokens: positiveInteger,
     soft_limit_tokens: positiveInteger,
     hard_limit_tokens: positiveInteger,
   },
+} as const;
+
+export const contextBudgetSchema = {
+  $schema: draft,
+  $id: 'https://primecontext.dev/schemas/v0.1/context-budget.schema.json',
+  ...contextBudgetContract,
 } as const;
 
 export const taskCapsuleSchema = {
@@ -47,11 +56,11 @@ export const taskCapsuleSchema = {
   required: ['schema_version', 'task_id', 'goal', 'task_type', 'boundaries', 'acceptance', 'context_budget'],
   properties: {
     schema_version: { const: '0.1' },
-    task_id: { type: 'string', minLength: 1 },
-    goal: { type: 'string', minLength: 1 },
+    task_id: taskIdString,
+    goal: nonEmptyString,
     task_type: { enum: taskTypes },
-    module: { type: 'string', minLength: 1 },
-    priority: { type: 'string', minLength: 1 },
+    module: nonEmptyString,
+    priority: nonEmptyString,
     boundaries: {
       type: 'object', additionalProperties: false,
       required: ['allowed_paths', 'forbidden_paths'],
@@ -60,20 +69,20 @@ export const taskCapsuleSchema = {
     decisions: {
       type: 'array', items: {
         type: 'object', additionalProperties: false, required: ['source', 'summary'],
-        properties: { source: { type: 'string', minLength: 1 }, summary: { type: 'string', minLength: 1 } },
+        properties: { source: nonEmptyString, summary: nonEmptyString },
       },
     },
     contracts: stringArray,
     documents: stringArray,
     code_targets: stringArray,
-    acceptance: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 } },
-    context_budget: contextBudgetSchema,
+    acceptance: { type: 'array', minItems: 1, items: nonEmptyString },
+    context_budget: contextBudgetContract,
     worktree: {
       type: 'object', additionalProperties: false, required: ['root'],
       properties: {
-        root: { type: 'string', minLength: 1 },
-        branch: { type: 'string', minLength: 1 },
-        head: { type: 'string', minLength: 1 },
+        root: nonEmptyString,
+        branch: nonEmptyString,
+        head: nonEmptyString,
       },
     },
     metadata: { type: 'object' },
@@ -88,9 +97,9 @@ export const compactHandoffSchema = {
   required: ['schema_version', 'task_id', 'status', 'changed_files', 'tests', 'risks', 'next_unblocked'],
   properties: {
     schema_version: { const: '0.1' },
-    task_id: { type: 'string', minLength: 1 },
+    task_id: taskIdString,
     status: { enum: ['PASS', 'FAIL', 'PARTIAL', 'BLOCKED'] },
-    commit: { type: 'string', minLength: 1 },
+    commit: nonEmptyString,
     changed_files: stringArray,
     interfaces_added: stringArray,
     decisions: stringArray,
@@ -101,7 +110,7 @@ export const compactHandoffSchema = {
     risks: stringArray,
     next_unblocked: stringArray,
     artifacts: stringArray,
-    metrics_ref: { type: 'string', minLength: 1 },
+    metrics_ref: nonEmptyString,
   },
 } as const;
 
@@ -113,27 +122,30 @@ export const repoMapSchema = {
   required: ['schema_version', 'generated_at', 'repository', 'modules', 'summary'],
   properties: {
     schema_version: { const: '0.1' },
-    generated_at: { type: 'string', minLength: 1 },
+    generated_at: nonEmptyString,
     repository: {
       type: 'object', additionalProperties: false, required: ['root', 'name'],
       properties: {
-        root: { type: 'string', minLength: 1 }, name: { type: 'string', minLength: 1 },
-        branch: { type: 'string', minLength: 1 }, head: { type: 'string', minLength: 1 },
+        root: nonEmptyString, name: nonEmptyString,
+        branch: nonEmptyString, head: nonEmptyString,
       },
     },
     modules: {
-      type: 'array', items: {
+      type: 'array',
+      $comment: 'Module ids must be unique; enforced by the runtime validator.',
+      items: {
         type: 'object', additionalProperties: false, required: ['id', 'path', 'kind', 'role', 'evidence'],
         properties: {
-          id: { type: 'string', minLength: 1 }, path: { type: 'string', minLength: 1 },
+          id: nonEmptyString, path: nonEmptyString,
           kind: { enum: ['workspace_package', 'source', 'tests', 'documentation', 'configuration', 'examples', 'benchmarks', 'other'] },
-          role: { type: 'string', minLength: 1 }, evidence: stringArray,
+          role: nonEmptyString, evidence: stringArray,
         },
       },
     },
     summary: {
       type: 'object', additionalProperties: false,
       required: ['module_count', 'discovered_path_count', 'excluded_path_count'],
+      $comment: 'module_count must equal the length of modules; enforced by the runtime validator.',
       properties: { module_count: nonNegativeInteger, discovered_path_count: nonNegativeInteger, excluded_path_count: nonNegativeInteger },
     },
   },
@@ -146,12 +158,42 @@ export const metricRecordSchema = {
   additionalProperties: false,
   required: ['schema_version', 'task_id', 'recorded_at'],
   properties: {
-    schema_version: { const: '0.1' }, task_id: { type: 'string', minLength: 1 }, recorded_at: { type: 'string', minLength: 1 },
+    schema_version: { const: '0.1' }, task_id: taskIdString, recorded_at: nonEmptyString,
     arm: { enum: ['A', 'B'] },
     input_tokens: nonNegativeInteger, cached_input_tokens: nonNegativeInteger, output_tokens: nonNegativeInteger,
     tool_calls: nonNegativeInteger, file_reads: nonNegativeInteger, codegraph_calls: nonNegativeInteger,
     context_expansions: nonNegativeInteger, duration_ms: nonNegativeInteger, selected_context_tokens: nonNegativeInteger,
-    test_status: { enum: ['PASS', 'FAIL', 'UNKNOWN'] }, review_status: { enum: ['PASS', 'FAIL', 'UNKNOWN'] }, rework_count: nonNegativeInteger,
-    estimated_fields: { type: 'array', uniqueItems: true, items: { enum: metricNumericFields } },
+    test_status: { enum: ['PASS', 'FAIL', 'UNKNOWN'] }, review_status: { enum: ['PASS', 'FAIL', 'UNKNOWN'] },
+    completion_status: { enum: ['PASS', 'FAIL', 'UNKNOWN'] }, rework_count: nonNegativeInteger,
+    estimated_fields: {
+      type: 'array', uniqueItems: true, items: { enum: metricNumericFields },
+      $comment: 'Each estimated field must also be present as a measurement; enforced by the runtime validator.',
+    },
+  },
+} as const;
+
+export const primeContextConfigSchema = {
+  $schema: draft,
+  $id: 'https://primecontext.dev/schemas/v0.1/primecontext-config.schema.json',
+  type: 'object',
+  additionalProperties: false,
+  required: ['schema_version', 'state_dir', 'exclude', 'budgets'],
+  properties: {
+    schema_version: { const: '0.1' },
+    state_dir: nonEmptyString,
+    exclude: stringArray,
+    budgets: {
+      type: 'object',
+      additionalProperties: false,
+      required: taskTypes,
+      properties: {
+        small_ui: contextBudgetContract,
+        small_code_fix: contextBudgetContract,
+        module_feature: contextBudgetContract,
+        integration: contextBudgetContract,
+        qa: contextBudgetContract,
+        orchestration: contextBudgetContract,
+      },
+    },
   },
 } as const;

@@ -45,3 +45,14 @@ test('includes Git/worktree metadata when the Git port provides it', async () =>
   assert.equal(map.repository.branch, 'feat/context');
   assert.equal(map.repository.head, 'abc123');
 });
+
+test('sorts modules by ordinal path order instead of host locale', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'primecontext-map-order-'));
+  await mkdir(join(root, 'alpha'));
+  await mkdir(join(root, 'Zeta'));
+  await writeFile(join(root, 'alpha', 'package.json'), JSON.stringify({ name: 'alpha' }));
+  await writeFile(join(root, 'Zeta', 'package.json'), JSON.stringify({ name: 'zeta' }));
+
+  const map = await generateRepoMap(root, new NodeFileSystemAdapter(), { inspect: async () => undefined });
+  assert.deepEqual(map.modules.map((module) => module.path), ['Zeta', 'alpha']);
+});

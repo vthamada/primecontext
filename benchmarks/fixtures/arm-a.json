@@ -10,5 +10,6 @@
   "duration_ms": 180000,
   "test_status": "PASS",
   "review_status": "PASS",
+  "completion_status": "PASS",
   "rework_count": 1
 }

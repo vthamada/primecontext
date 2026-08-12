@@ -5,3 +5,38 @@ packages/*/*.tsbuildinfo
 coverage/
 .DS_Store
 *.log
+
+# Sensitive local data must never enter repository context or Git.
+.env
+.env.*
+**/credentials*.json
+**/secrets*.json
+**/cookies*.json
+**/passwords*.json
+**/tokens*.json
+.npmrc
+.pypirc
+.netrc
+.ssh/
+.aws/
+*.pem
+*.key
+*.p12
+*.pfx
+*.dump
+*.sql
+*.sqlite
+*.sqlite3
+*.db
+*.bak
+*.backup
+*.bundle
+private-uploads/
+private_uploads/
+
+# Local transfer/continuation artifacts are not project source.
+PrimeContext_v0.1_foundations.bundle
+PrimeContext — Implementation Continuation.md
+/2026-08-11-v0.1-foundations.md
+/v0.1-foundations-verification.md
+/v0.1-implementation-architecture.md

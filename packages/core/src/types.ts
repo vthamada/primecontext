@@ -92,6 +92,7 @@ export interface MetricRecord {
   selected_context_tokens?: number;
   test_status?: 'PASS' | 'FAIL' | 'UNKNOWN';
   review_status?: 'PASS' | 'FAIL' | 'UNKNOWN';
+  completion_status?: 'PASS' | 'FAIL' | 'UNKNOWN';
   rework_count?: number;
   estimated_fields?: MetricNumericField[];
 }
@@ -151,5 +152,140 @@ export interface SemanticRepoMap {
     module_count: number;
     discovered_path_count: number;
     excluded_path_count: number;
+  };
+}
+
+export type DocumentAuthority =
+  | 'policy'
+  | 'adr'
+  | 'specification'
+  | 'contract_schema'
+  | 'roadmap'
+  | 'implementation_note'
+  | 'generated_summary';
+
+export type DocumentMatchField = 'title' | 'path' | 'module' | 'topic' | 'body';
+
+export type DocumentAuthorityBasis =
+  | { kind: 'convention'; rule_id: string }
+  | { kind: 'default' };
+
+export interface DocumentSource {
+  path: string;
+  format: 'markdown';
+  title: string;
+  authority: DocumentAuthority;
+  authority_basis: DocumentAuthorityBasis;
+  modules: string[];
+  topics: string[];
+  source_hash: string;
+  size_bytes: number;
+  content: string;
+}
+
+export interface DocumentSourceCollection {
+  documents: DocumentSource[];
+  summary: {
+    discovered_path_count: number;
+    excluded_path_count: number;
+    candidate_document_count: number;
+    omitted_document_count: number;
+  };
+}
+
+export interface DocumentHashPort {
+  sha256(value: string | Uint8Array): string;
+}
+
+export interface DocumentCatalogEntry {
+  id: string;
+  path: string;
+  format: 'markdown';
+  title: string;
+  authority: DocumentAuthority;
+  authority_basis: DocumentAuthorityBasis;
+  modules: string[];
+  topics: string[];
+  source_hash: string;
+  size_bytes: number;
+}
+
+export interface DocumentCatalog {
+  schema_version: '0.2';
+  generated_at: string;
+  catalog_digest: string;
+  worktree?: { branch?: string; head?: string };
+  documents: DocumentCatalogEntry[];
+  summary: {
+    discovered_path_count: number;
+    excluded_path_count: number;
+    candidate_document_count: number;
+    document_count: number;
+    omitted_document_count: number;
+    total_source_bytes: number;
+  };
+}
+
+export interface DocumentCatalogInput {
+  generated_at: string;
+  worktree?: { branch?: string; head?: string };
+  source_collection: DocumentSourceCollection;
+}
+
+export interface DocumentSearchFilters {
+  authorities?: DocumentAuthority[];
+  modules?: string[];
+  topics?: string[];
+}
+
+export interface DocumentSearchQuery {
+  schema_version: '0.2';
+  query: string;
+  filters?: DocumentSearchFilters;
+  limit?: number;
+}
+
+export interface DocumentExcerpt {
+  text: string;
+  start_line: number;
+  end_line: number;
+  truncated: boolean;
+}
+
+export interface DocumentSearchHit {
+  document_id: string;
+  path: string;
+  title: string;
+  authority: DocumentAuthority;
+  source_hash: string;
+  score: number;
+  matched_fields: DocumentMatchField[];
+  matched_terms: string[];
+  excerpt: DocumentExcerpt;
+}
+
+export interface DocumentConflict {
+  normalized_title: string;
+  document_ids: string[];
+}
+
+export interface DocumentSearchResult {
+  schema_version: '0.2';
+  catalog_digest: string;
+  query: string;
+  terms: string[];
+  effective_filters: {
+    authorities: DocumentAuthority[];
+    modules: string[];
+    topics: string[];
+  };
+  hits: DocumentSearchHit[];
+  conflicts: DocumentConflict[];
+  summary: {
+    catalog_document_count: number;
+    filtered_document_count: number;
+    matched_document_count: number;
+    returned_hit_count: number;
+    truncated: boolean;
   };
 }

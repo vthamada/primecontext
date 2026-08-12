@@ -1,6 +1,5 @@
-import { readFile, writeFile, mkdir, appendFile } from 'node:fs/promises';
-import { basename, isAbsolute, join, resolve } from 'node:path';
-import { NodeFileSystemAdapter, NodeGitAdapter, assertPathInsideRoot } from '@primecontext/adapters';
+import { basename, join, resolve } from 'node:path';
+import { NodeFileSystemAdapter, NodeGitAdapter } from '@primecontext/adapters';
 import { compareBenchmarkArms, type BenchmarkComparison } from '@primecontext/benchmark';
 import {
   PrimeContextError,
@@ -13,48 +12,54 @@ import {
   type TaskType,
 } from '@primecontext/core';
 import { generateRepoMap } from '@primecontext/repo-map';
-import { taskTypes, validateTaskCapsule } from '@primecontext/schemas';
-import { CONFIG_FILE, defaultConfig, loadConfig, writeDefaultConfig } from './config.js';
+import { isValidTaskId, taskTypes, validateTaskCapsule } from '@primecontext/schemas';
+import { CONFIG_FILE, defaultConfig, loadConfig } from './config.js';
+import {
+  ensureSafeDirectory,
+  MAX_JSON_INPUT_BYTES,
+  MAX_METRIC_RECORDS,
+  MAX_METRICS_BYTES,
+  readInternalJson,
+  readInternalText,
+  readRepositoryJson,
+  repositoryRelativePath,
+  writeInternalJson,
+  writeInternalText,
+} from './safe-io.js';
 
-async function exists(path: string): Promise<boolean> {
-  try { await readFile(path); return true; } catch { return false; }
+function stateRelativePath(root: string, configured: string): string {
+  return repositoryRelativePath(resolve(root), configured, 'state_dir');
 }
 
-async function writeJson(path: string, value: unknown): Promise<void> {
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
+function absoluteRepositoryPath(root: string, relativePath: string): string {
+  return resolve(root, repositoryRelativePath(root, relativePath));
 }
 
-async function readJson(path: string): Promise<unknown> {
-  try { return JSON.parse(await readFile(path, 'utf8')) as unknown; }
-  catch (error) {
-    throw new PrimeContextError('IO_ERROR', `Unable to read JSON: ${path}`, [error instanceof Error ? error.message : String(error)]);
-  }
-}
-
-function stateDir(root: string, configured: string): string {
-  return assertPathInsideRoot(resolve(root), configured);
+function assertSafeTaskId(taskId: unknown): asserts taskId is string {
+  if (!isValidTaskId(taskId)) throw new PrimeContextError('SECURITY_ERROR', 'task_id must be a safe bounded identifier');
 }
 
 export async function initCommand(root: string): Promise<{ config_path: string; state_dir: string; created_config: boolean }> {
   const resolvedRoot = resolve(root);
   const configPath = join(resolvedRoot, CONFIG_FILE);
   let createdConfig = false;
-  if (!(await exists(configPath))) {
-    await writeDefaultConfig(configPath);
+  const existingConfig = await readInternalText(resolvedRoot, CONFIG_FILE, MAX_JSON_INPUT_BYTES, { allowMissing: true });
+  if (existingConfig === undefined) {
+    await writeInternalText(resolvedRoot, CONFIG_FILE, `${JSON.stringify(defaultConfig(), null, 2)}\n`);
     createdConfig = true;
   }
   const config = await loadConfig(resolvedRoot);
-  const localState = stateDir(resolvedRoot, config.state_dir);
-  await mkdir(join(localState, 'capsules'), { recursive: true });
-  await mkdir(join(localState, 'tasks'), { recursive: true });
+  const localStateRelative = stateRelativePath(resolvedRoot, config.state_dir);
+  const localState = await ensureSafeDirectory(resolvedRoot, localStateRelative);
+  await ensureSafeDirectory(resolvedRoot, join(localStateRelative, 'capsules'));
+  await ensureSafeDirectory(resolvedRoot, join(localStateRelative, 'tasks'));
 
-  const ignorePath = join(resolvedRoot, '.gitignore');
-  let ignore = '';
-  try { ignore = await readFile(ignorePath, 'utf8'); } catch { /* create below */ }
+  const ignorePath = '.gitignore';
+  const ignore = await readInternalText(resolvedRoot, ignorePath, MAX_JSON_INPUT_BYTES, { allowMissing: true }) ?? '';
   const ignoreEntry = `${config.state_dir.replace(/\\/g, '/').replace(/\/$/, '')}/`;
   if (!ignore.split(/\r?\n/).includes(ignoreEntry)) {
     const prefix = ignore.length > 0 && !ignore.endsWith('\n') ? '\n' : '';
-    await appendFile(ignorePath, `${prefix}${ignoreEntry}\n`);
+    await writeInternalText(resolvedRoot, ignorePath, `${ignore}${prefix}${ignoreEntry}\n`);
   }
   return { config_path: configPath, state_dir: localState, created_config: createdConfig };
 }
@@ -62,12 +67,12 @@ export async function initCommand(root: string): Promise<{ config_path: string; 
 export async function mapCommand(root: string): Promise<{ map_path: string; module_count: number }> {
   const resolvedRoot = resolve(root);
   const config = await loadConfig(resolvedRoot);
-  const localState = stateDir(resolvedRoot, config.state_dir);
-  await mkdir(localState, { recursive: true });
+  const localState = stateRelativePath(resolvedRoot, config.state_dir);
+  await ensureSafeDirectory(resolvedRoot, localState);
   const map = await generateRepoMap(resolvedRoot, new NodeFileSystemAdapter(config.exclude), new NodeGitAdapter());
-  const mapPath = join(localState, 'repo-map.json');
-  await writeJson(mapPath, map);
-  return { map_path: mapPath, module_count: map.summary.module_count };
+  const mapRelativePath = join(localState, 'repo-map.json');
+  await writeInternalJson(resolvedRoot, mapRelativePath, map);
+  return { map_path: absoluteRepositoryPath(resolvedRoot, mapRelativePath), module_count: map.summary.module_count };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -75,13 +80,22 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function stringArray(value: unknown, field: string): string[] {
-  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) throw new PrimeContextError('VALIDATION_ERROR', `${field} must be an array of strings`);
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || item.length === 0)) {
+    throw new PrimeContextError('VALIDATION_ERROR', `${field} must be an array of non-empty strings`);
+  }
   return [...value] as string[];
 }
 
 function parseTaskDefinition(value: unknown, expectedTaskId: string): TaskDefinitionInput {
+  assertSafeTaskId(expectedTaskId);
   if (!isObject(value)) throw new PrimeContextError('VALIDATION_ERROR', 'Task definition must be an object');
+  const allowed = new Set([
+    'task_id','goal','task_type','module','priority','boundaries','acceptance','contracts','documents',
+    'code_targets','metadata','decisions',
+  ]);
+  for (const key of Object.keys(value)) if (!allowed.has(key)) throw new PrimeContextError('VALIDATION_ERROR', `Task definition property is not allowed: ${key}`);
   if (value.task_id !== expectedTaskId) throw new PrimeContextError('VALIDATION_ERROR', `Task definition task_id must equal ${expectedTaskId}`);
+  assertSafeTaskId(value.task_id);
   if (typeof value.goal !== 'string' || !value.goal) throw new PrimeContextError('VALIDATION_ERROR', 'Task definition goal is required');
   if (!(taskTypes as readonly unknown[]).includes(value.task_type)) throw new PrimeContextError('VALIDATION_ERROR', 'Task definition task_type is invalid');
   if (!isObject(value.boundaries)) throw new PrimeContextError('VALIDATION_ERROR', 'Task definition boundaries are required');
@@ -89,6 +103,9 @@ function parseTaskDefinition(value: unknown, expectedTaskId: string): TaskDefini
     allowed_paths: stringArray(value.boundaries.allowed_paths, 'boundaries.allowed_paths'),
     forbidden_paths: stringArray(value.boundaries.forbidden_paths, 'boundaries.forbidden_paths'),
   };
+  for (const key of Object.keys(value.boundaries)) {
+    if (key !== 'allowed_paths' && key !== 'forbidden_paths') throw new PrimeContextError('VALIDATION_ERROR', `boundaries.${key} is not allowed`);
+  }
   const acceptance = stringArray(value.acceptance, 'acceptance');
   if (acceptance.length === 0) throw new PrimeContextError('VALIDATION_ERROR', 'acceptance must contain at least one criterion');
 
@@ -99,18 +116,28 @@ function parseTaskDefinition(value: unknown, expectedTaskId: string): TaskDefini
     boundaries,
     acceptance,
   };
-  if (typeof value.module === 'string' && value.module) task.module = value.module;
-  if (typeof value.priority === 'string' && value.priority) task.priority = value.priority;
+  if (value.module !== undefined) {
+    if (typeof value.module !== 'string' || !value.module) throw new PrimeContextError('VALIDATION_ERROR', 'module must be a non-empty string');
+    task.module = value.module;
+  }
+  if (value.priority !== undefined) {
+    if (typeof value.priority !== 'string' || !value.priority) throw new PrimeContextError('VALIDATION_ERROR', 'priority must be a non-empty string');
+    task.priority = value.priority;
+  }
   if (value.contracts !== undefined) task.contracts = stringArray(value.contracts, 'contracts');
   if (value.documents !== undefined) task.documents = stringArray(value.documents, 'documents');
   if (value.code_targets !== undefined) task.code_targets = stringArray(value.code_targets, 'code_targets');
-  if (isObject(value.metadata)) task.metadata = value.metadata;
+  if (value.metadata !== undefined) {
+    if (!isObject(value.metadata)) throw new PrimeContextError('VALIDATION_ERROR', 'metadata must be an object');
+    task.metadata = value.metadata;
+  }
   if (value.decisions !== undefined) {
     if (!Array.isArray(value.decisions)) throw new PrimeContextError('VALIDATION_ERROR', 'decisions must be an array');
     task.decisions = value.decisions.map((decision, index) => {
       if (!isObject(decision) || typeof decision.source !== 'string' || !decision.source || typeof decision.summary !== 'string' || !decision.summary) {
         throw new PrimeContextError('VALIDATION_ERROR', `decisions[${index}] must contain source and summary`);
       }
+      for (const key of Object.keys(decision)) if (key !== 'source' && key !== 'summary') throw new PrimeContextError('VALIDATION_ERROR', `decisions[${index}].${key} is not allowed`);
       return { source: decision.source, summary: decision.summary };
     });
   }
@@ -119,12 +146,13 @@ function parseTaskDefinition(value: unknown, expectedTaskId: string): TaskDefini
 
 export async function taskCommand(root: string, taskId: string, fromFile?: string): Promise<{ capsule_path: string }> {
   const resolvedRoot = resolve(root);
+  assertSafeTaskId(taskId);
   const config = await loadConfig(resolvedRoot);
-  const localState = stateDir(resolvedRoot, config.state_dir);
-  const sourcePath = fromFile
-    ? (isAbsolute(fromFile) ? fromFile : resolve(resolvedRoot, fromFile))
-    : join(localState, 'tasks', `${taskId}.json`);
-  const definition = parseTaskDefinition(await readJson(sourcePath), taskId);
+  const localState = stateRelativePath(resolvedRoot, config.state_dir);
+  const definitionInput = fromFile
+    ? await readRepositoryJson(resolvedRoot, fromFile)
+    : await readInternalJson(resolvedRoot, join(localState, 'tasks', `${taskId}.json`));
+  const definition = parseTaskDefinition(definitionInput, taskId);
   const git = await new NodeGitAdapter().inspect(resolvedRoot);
   const capsule = createTaskCapsule(
     definition,
@@ -132,24 +160,25 @@ export async function taskCommand(root: string, taskId: string, fromFile?: strin
     config.budgets[definition.task_type] as ContextBudget,
   );
   const capsuleDir = join(localState, 'capsules');
-  await mkdir(capsuleDir, { recursive: true });
+  await ensureSafeDirectory(resolvedRoot, capsuleDir);
   const capsulePath = join(capsuleDir, `${taskId}.json`);
-  await writeJson(capsulePath, capsule);
-  return { capsule_path: capsulePath };
+  await writeInternalJson(resolvedRoot, capsulePath, capsule);
+  return { capsule_path: absoluteRepositoryPath(resolvedRoot, capsulePath) };
 }
 
 export async function inspectCommand(root: string, taskId: string): Promise<{ task_id: string; goal: string; task_type: string; context_budget: ContextBudget }> {
+  assertSafeTaskId(taskId);
   const config = await loadConfig(root);
-  const capsulePath = join(stateDir(root, config.state_dir), 'capsules', `${taskId}.json`);
-  const capsule = await readJson(capsulePath);
+  const capsulePath = join(stateRelativePath(root, config.state_dir), 'capsules', `${taskId}.json`);
+  const capsule = await readInternalJson(root, capsulePath);
   const validation = validateTaskCapsule(capsule);
   if (!validation.valid) throw new PrimeContextError('VALIDATION_ERROR', 'Stored Task Capsule is invalid', validation.errors);
   const typed = capsule as { task_id: string; goal: string; task_type: string; context_budget: ContextBudget };
   return { task_id: typed.task_id, goal: typed.goal, task_type: typed.task_type, context_budget: typed.context_budget };
 }
 
-export async function handoffValidateCommand(file: string): Promise<{ valid: true; task_id: string; status: string }> {
-  const handoff = assertValidHandoff(await readJson(resolve(file)));
+export async function handoffValidateCommand(file: string, root = process.cwd()): Promise<{ valid: true; task_id: string; status: string }> {
+  const handoff = assertValidHandoff(await readRepositoryJson(root, file));
   return { valid: true, task_id: handoff.task_id, status: handoff.status };
 }
 
@@ -158,28 +187,58 @@ const numericMetricFields: readonly MetricNumericField[] = [
   'context_expansions','duration_ms','selected_context_tokens','rework_count',
 ];
 
-export async function metricsCommand(root: string): Promise<{ record_count: number; totals: Partial<Record<MetricNumericField, number>>; estimated_fields: MetricNumericField[] }> {
-  const config = await loadConfig(root);
-  const metricsPath = join(stateDir(root, config.state_dir), 'metrics.jsonl');
-  let content: string;
-  try { content = await readFile(metricsPath, 'utf8'); }
-  catch { return { record_count: 0, totals: {}, estimated_fields: [] }; }
+function parseMetricLines(content: string): ReturnType<typeof assertValidMetricRecord>[] {
   const lines = content.split(/\r?\n/).filter(Boolean);
-  const totals: Partial<Record<MetricNumericField, number>> = {};
-  const estimated = new Set<MetricNumericField>();
-  for (const line of lines) {
+  if (lines.length > MAX_METRIC_RECORDS) throw new PrimeContextError('IO_ERROR', `metrics.jsonl exceeds the ${MAX_METRIC_RECORDS} record limit`);
+  return lines.map((line, index) => {
     let parsed: unknown;
-    try { parsed = JSON.parse(line) as unknown; } catch { throw new PrimeContextError('VALIDATION_ERROR', 'metrics.jsonl contains invalid JSON'); }
-    const record = assertValidMetricRecord(parsed);
-    for (const field of numericMetricFields) if (typeof record[field] === 'number') totals[field] = (totals[field] ?? 0) + record[field];
-    for (const field of record.estimated_fields ?? []) estimated.add(field);
-  }
-  return { record_count: lines.length, totals, estimated_fields: [...estimated].sort() };
+    try { parsed = JSON.parse(line) as unknown; }
+    catch { throw new PrimeContextError('VALIDATION_ERROR', `metrics.jsonl line ${index + 1} contains invalid JSON`); }
+    return assertValidMetricRecord(parsed);
+  });
 }
 
-export async function benchmarkCommand(armAFile: string, armBFile: string): Promise<BenchmarkComparison> {
-  const armA = assertValidMetricRecord(await readJson(resolve(armAFile)));
-  const armB = assertValidMetricRecord(await readJson(resolve(armBFile)));
+export async function metricsCommand(root: string): Promise<{ record_count: number; totals: Partial<Record<MetricNumericField, number>>; estimated_fields: MetricNumericField[] }> {
+  const resolvedRoot = resolve(root);
+  const config = await loadConfig(resolvedRoot);
+  const metricsPath = join(stateRelativePath(resolvedRoot, config.state_dir), 'metrics.jsonl');
+  const content = await readInternalText(resolvedRoot, metricsPath, MAX_METRICS_BYTES, { allowMissing: true });
+  if (content === undefined) return { record_count: 0, totals: {}, estimated_fields: [] };
+  const records = parseMetricLines(content);
+  const totals: Partial<Record<MetricNumericField, number>> = {};
+  const estimated = new Set<MetricNumericField>();
+  for (const record of records) {
+    for (const field of numericMetricFields) {
+      const measurement = record[field];
+      if (typeof measurement !== 'number') continue;
+      const total = (totals[field] ?? 0) + measurement;
+      if (!Number.isSafeInteger(total)) {
+        throw new PrimeContextError('VALIDATION_ERROR', `Metric aggregate exceeds the safe integer range: ${field}`);
+      }
+      totals[field] = total;
+    }
+    for (const field of record.estimated_fields ?? []) estimated.add(field);
+  }
+  return { record_count: records.length, totals, estimated_fields: [...estimated].sort() };
+}
+
+export async function recordMetricCommand(root: string, file: string): Promise<{ metrics_path: string; record_count: number }> {
+  const resolvedRoot = resolve(root);
+  const config = await loadConfig(resolvedRoot);
+  const record = assertValidMetricRecord(await readRepositoryJson(resolvedRoot, file));
+  const metricsPath = join(stateRelativePath(resolvedRoot, config.state_dir), 'metrics.jsonl');
+  const existing = await readInternalText(resolvedRoot, metricsPath, MAX_METRICS_BYTES, { allowMissing: true }) ?? '';
+  const records = parseMetricLines(existing);
+  if (records.length >= MAX_METRIC_RECORDS) throw new PrimeContextError('IO_ERROR', `metrics.jsonl reached the ${MAX_METRIC_RECORDS} record limit`);
+  const next = `${existing}${existing.length > 0 && !existing.endsWith('\n') ? '\n' : ''}${JSON.stringify(record)}\n`;
+  if (Buffer.byteLength(next, 'utf8') > MAX_METRICS_BYTES) throw new PrimeContextError('IO_ERROR', 'metrics.jsonl would exceed the byte limit');
+  await writeInternalText(resolvedRoot, metricsPath, next);
+  return { metrics_path: absoluteRepositoryPath(resolvedRoot, metricsPath), record_count: records.length + 1 };
+}
+
+export async function benchmarkCommand(armAFile: string, armBFile: string, root = process.cwd()): Promise<BenchmarkComparison> {
+  const armA = assertValidMetricRecord(await readRepositoryJson(root, armAFile, 'BENCHMARK_ERROR'));
+  const armB = assertValidMetricRecord(await readRepositoryJson(root, armBFile, 'BENCHMARK_ERROR'));
   return compareBenchmarkArms(armA, armB);
 }
 

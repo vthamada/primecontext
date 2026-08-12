@@ -1,6 +1,7 @@
 import { validateTaskCapsule } from '@primecontext/schemas';
 import { allocateContextBudget } from './budget.js';
 import { PrimeContextError } from './errors.js';
+import { cloneValidatedJson } from './json.js';
 import type { ContextBudget, TaskCapsule, TaskDefinitionInput, WorktreeMetadata } from './types.js';
 
 export function createTaskCapsule(
@@ -27,5 +28,5 @@ export function createTaskCapsule(
   };
   const validation = validateTaskCapsule(capsule);
   if (!validation.valid) throw new PrimeContextError('VALIDATION_ERROR', 'Invalid Task Capsule', validation.errors);
-  return capsule;
+  return cloneValidatedJson(capsule);
 }

@@ -1,0 +1,19 @@
+{
+  "schema_version": "0.1",
+  "task_id": "MAXSOUND-PILOT-001",
+  "status": "PASS",
+  "changed_files": [],
+  "tests": {
+    "passed": 1,
+    "failed": 0
+  },
+  "risks": [
+    "This is a sanitized contract fixture, not a production-change handoff"
+  ],
+  "next_unblocked": [
+    "Run the reference pilot under the repository owner's privacy controls"
+  ],
+  "artifacts": [
+    ".primecontext/capsules/MAXSOUND-PILOT-001.json"
+  ]
+}
