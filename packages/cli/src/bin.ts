@@ -16,6 +16,25 @@ import {
   docsSearchCommand,
   type DocsSearchOptions,
 } from './documents.js';
+import {
+  contextAblateCommand,
+  contextExpandCommand,
+  contextIndexCommand,
+  contextInspectCommand,
+  contextOutcomeCommand,
+  contextPlanCommand,
+  contextReplayCommand,
+} from './context.js';
+import {
+  capabilitiesCommand,
+  contextPrepareCommand,
+  doctorCommand,
+} from './onboarding.js';
+import {
+  prepareGoalCommand,
+  setupCommand,
+  type PrepareGoalOptionsV03,
+} from './automation.js';
 
 function usageError(message: string): never {
   throw new PrimeContextError('VALIDATION_ERROR', message);
@@ -77,13 +96,51 @@ function parseDocsSearchArguments(args: string[]): { query: string; options: Doc
   return { query, options };
 }
 
+function parseHumanPrepareArguments(args: string[]): { goal: string; options: PrepareGoalOptionsV03 } {
+  const [goal, ...flagArguments] = args;
+  if (!goal || goal.trim().length === 0 || goal.startsWith('--')) {
+    usageError('prepare requires one non-empty <goal> before flags');
+  }
+  const values: Record<'--accept' | '--path' | '--term', string[]> = {
+    '--accept': [], '--path': [], '--term': [],
+  };
+  for (let index = 0; index < flagArguments.length; index += 2) {
+    const flag = flagArguments[index] as keyof typeof values;
+    const value = flagArguments[index + 1];
+    if (!Object.hasOwn(values, flag)) usageError(`Unknown flag: ${String(flag)}`);
+    if (!value || value.trim().length === 0 || value.startsWith('--')) usageError(`${flag} requires a value`);
+    if (values[flag].includes(value)) usageError(`Duplicate ${flag} value: ${value}`);
+    values[flag].push(value);
+  }
+  return {
+    goal,
+    options: {
+      ...(values['--accept'].length ? { acceptance: values['--accept'] } : {}),
+      ...(values['--path'].length ? { paths: values['--path'] } : {}),
+      ...(values['--term'].length ? { terms: values['--term'] } : {}),
+    },
+  };
+}
+
 function usage(): string {
   return [
-    'PrimeContext source checkout (v0.1 foundations + v0.2 document retrieval)',
+    'PrimeContext source checkout (v0.1 foundations + v0.2 retrieval + v0.3 context compiler)',
     '  primecontext init',
+    '  primecontext setup',
+    '  primecontext prepare <goal> [--accept <criterion>]... [--path <path>]... [--term <term>]...',
+    '  primecontext capabilities',
+    '  primecontext doctor',
     '  primecontext map',
     '  primecontext docs index',
     '  primecontext docs search <query> [--limit <1-50>] [--authority <authority>] [--module <module>] [--topic <topic>]',
+    '  primecontext context index',
+    '  primecontext context prepare --from <intent.json|->',
+    '  primecontext context plan --from <request.json>',
+    '  primecontext context inspect <task-id>',
+    '  primecontext context expand <task-id> --from <request.json>',
+    '  primecontext context outcome <task-id> --from <outcome.json>',
+    '  primecontext context replay <task-id>',
+    '  primecontext context ablate <task-id> --candidate <candidate-id>',
     '  primecontext task <task-id> [--from <file>]',
     '  primecontext inspect <task-id>',
     '  primecontext handoff validate <file>',
@@ -98,6 +155,14 @@ async function main(): Promise<void> {
   const root = process.cwd();
   let result: unknown;
   switch (command) {
+    case 'setup': requireNoArguments(command, args); result = await setupCommand(root); break;
+    case 'prepare': {
+      const parsed = parseHumanPrepareArguments(args);
+      result = await prepareGoalCommand(root, parsed.goal, parsed.options);
+      break;
+    }
+    case 'capabilities': requireNoArguments(command, args); result = capabilitiesCommand(root); break;
+    case 'doctor': requireNoArguments(command, args); result = await doctorCommand(root); break;
     case 'init': requireNoArguments(command, args); result = await initCommand(root); break;
     case 'map': requireNoArguments(command, args); result = await mapCommand(root); break;
     case 'docs': {
@@ -110,6 +175,43 @@ async function main(): Promise<void> {
         result = await docsSearchCommand(root, parsed.query, parsed.options);
       } else {
         usageError('docs requires index or search');
+      }
+      break;
+    }
+    case 'context': {
+      const [subcommand, ...contextArgs] = args;
+      if (subcommand === 'index') {
+        requireNoArguments('context index', contextArgs);
+        result = await contextIndexCommand(root);
+      } else if (subcommand === 'prepare') {
+        const flags = parseRequiredFlags(contextArgs, ['--from']);
+        result = await contextPrepareCommand(root, flags['--from'] as string);
+      } else if (subcommand === 'plan') {
+        const flags = parseRequiredFlags(contextArgs, ['--from']);
+        result = await contextPlanCommand(root, flags['--from'] as string);
+      } else if (subcommand === 'inspect') {
+        if (contextArgs.length !== 1) usageError('context inspect requires exactly one <task-id>');
+        result = await contextInspectCommand(root, contextArgs[0] as string);
+      } else if (subcommand === 'expand') {
+        const [taskId, ...flagArgs] = contextArgs;
+        if (!taskId || taskId.startsWith('--')) usageError('context expand requires <task-id>');
+        const flags = parseRequiredFlags(flagArgs, ['--from']);
+        result = await contextExpandCommand(root, taskId, flags['--from'] as string);
+      } else if (subcommand === 'outcome') {
+        const [taskId, ...flagArgs] = contextArgs;
+        if (!taskId || taskId.startsWith('--')) usageError('context outcome requires <task-id>');
+        const flags = parseRequiredFlags(flagArgs, ['--from']);
+        result = await contextOutcomeCommand(root, taskId, flags['--from'] as string);
+      } else if (subcommand === 'replay') {
+        if (contextArgs.length !== 1) usageError('context replay requires exactly one <task-id>');
+        result = await contextReplayCommand(root, contextArgs[0] as string);
+      } else if (subcommand === 'ablate') {
+        const [taskId, ...flagArgs] = contextArgs;
+        if (!taskId || taskId.startsWith('--')) usageError('context ablate requires <task-id>');
+        const flags = parseRequiredFlags(flagArgs, ['--candidate']);
+        result = await contextAblateCommand(root, taskId, flags['--candidate'] as string);
+      } else {
+        usageError('context requires index, prepare, plan, inspect, expand, outcome, replay, or ablate');
       }
       break;
     }
@@ -157,8 +259,10 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(message);
-  if (process.env.PRIMECONTEXT_DEBUG === '1' && error instanceof Error) console.error(error.stack);
+  const code = error instanceof PrimeContextError ? error.code : 'IO_ERROR';
+  const raw = error instanceof Error ? error.message : String(error);
+  const sanitized = raw.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ');
+  const message = [...sanitized].slice(0, 4_096).join('');
+  console.error(JSON.stringify({ error: { code, message } }));
   process.exitCode = 1;
 });

@@ -87,6 +87,7 @@ test('sensitive path policy covers required credential and private-data classes'
     'exports/private-dump.json',
     'data/pii.csv',
     'storage/private-uploads/customer.pdf',
+    'knowledge/.obsidian/app.json',
     '.git./config',
     'config/credentials.json.',
     'src/file.txt:private-stream',

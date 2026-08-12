@@ -3,10 +3,12 @@ import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises';
 import { platform, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { PrimeContextError } from '@primecontext/core';
 import {
   DEFAULT_DOCUMENT_DISCOVERY_LIMITS,
   NodeDocumentSourceAdapter,
   NodeSha256Hasher,
+  readSafeRepositoryText,
 } from './index.js';
 
 interface ExpectedDocumentSource {
@@ -93,6 +95,27 @@ test('sensitive paths and configured excludes are rejected before content decodi
   assert.ok(result.excluded_path_count >= 4);
   for (const blocked of ['credentials.md', '.env.production.md', 'private.md', 'generated.md']) {
     assert.equal(serialized.includes(blocked), false, blocked);
+  }
+});
+
+test('safe repository text rejects sensitive paths before attempting a filesystem read', async () => {
+  const root = await repositoryFixture();
+
+  for (const relativePath of [
+    '.git/config',
+    '.primecontext/context.sqlite',
+    '.obsidian/workspace.json',
+  ]) {
+    await assert.rejects(
+      readSafeRepositoryText(root, relativePath, 1_024),
+      (error: unknown) => {
+        assert.equal(error instanceof PrimeContextError, true);
+        assert.equal((error as PrimeContextError).code, 'SECURITY_ERROR');
+        assert.match((error as Error).message, /sensitive path/i);
+        return true;
+      },
+      relativePath,
+    );
   }
 });
 

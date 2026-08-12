@@ -2,15 +2,27 @@ import { lstat, mkdir, readFile, readdir, rename, unlink, writeFile } from 'node
 import { dirname, isAbsolute, join, parse, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  ablationRequestSchema,
+  ablationResultSchema,
   compactHandoffSchema,
   contextBudgetSchema,
   documentCatalogSchema,
   documentSearchQuerySchema,
   documentSearchResultSchema,
+  contextCandidateSchema,
+  contextEnvelopeSchema,
+  contextIntentSchema,
+  contextPlanRequestSchema,
+  expansionDecisionSchema,
+  expansionRequestSchema,
   metricRecordSchema,
   primeContextConfigSchema,
+  outcomeReceiptSchema,
+  outcomeDeclarationSchema,
+  replayResultSchema,
   repoMapSchema,
   taskCapsuleSchema,
+  selectionReceiptSchema,
 } from '../dist/index.js';
 
 const packageRoot = resolve(join(dirname(fileURLToPath(import.meta.url)), '..'));
@@ -32,6 +44,23 @@ const contractGroups = [
       ['document-catalog.schema.json', documentCatalogSchema],
       ['document-search-query.schema.json', documentSearchQuerySchema],
       ['document-search-result.schema.json', documentSearchResultSchema],
+    ],
+  },
+  {
+    version: 'v0.3',
+    contracts: [
+      ['ablation-request.schema.json', ablationRequestSchema],
+      ['ablation-result.schema.json', ablationResultSchema],
+      ['context-candidate.schema.json', contextCandidateSchema],
+      ['context-envelope.schema.json', contextEnvelopeSchema],
+      ['context-intent.schema.json', contextIntentSchema],
+      ['context-plan-request.schema.json', contextPlanRequestSchema],
+      ['expansion-decision.schema.json', expansionDecisionSchema],
+      ['expansion-request.schema.json', expansionRequestSchema],
+      ['outcome-declaration.schema.json', outcomeDeclarationSchema],
+      ['outcome-receipt.schema.json', outcomeReceiptSchema],
+      ['replay-result.schema.json', replayResultSchema],
+      ['selection-receipt.schema.json', selectionReceiptSchema],
     ],
   },
 ];

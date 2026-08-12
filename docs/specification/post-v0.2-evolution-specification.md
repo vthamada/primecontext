@@ -1,12 +1,21 @@
 # PrimeContext Post-v0.2 Evolution Specification
 
-**Status:** Planning baseline; not approved implementation scope
+**Status:** Planning baseline; the separately specified v0.3 proof-carrying
+compiler vertical slice is approved, while all other items remain unapproved
 **Date:** 2026-08-12
 **Covers:** Candidate phases v0.3 through v0.6 and the v1.0 readiness gates
 
 ## 1. Purpose and authorization boundary
 
 This document inventories and orders the product work that remains after the v0.1 foundations and the first v0.2 Document Catalog and lexical-retrieval slice. It is a master planning specification, not authorization to implement every listed capability as one change.
+
+The bounded [Proof-Carrying Context Compiler v0.3 specification](proof-carrying-context-compiler-specification-v0.3.md),
+its [architecture](../architecture/v0.3-proof-carrying-context-compiler-architecture.md),
+and [ADR-0009](../adr/0009-local-hybrid-context-index.md) now supersede this
+planning document only for that approved vertical slice. They authorize
+deterministic planning/receipts, progressive expansion, outcome declarations,
+experimental replay/ablation, and optional local SQLite/FTS and TypeScript
+CodeGraph adapters. Every other candidate below remains planning only.
 
 The repository-wide `AGENTS.md` remains the implementation authority. Before work begins on any phase below, that phase requires:
 
@@ -36,7 +45,9 @@ Remaining work is classified so that "finish the project" does not silently turn
 
 ### 3.1 Planned candidate phases
 
-These capabilities express the intended product direction, but each remains behind its own implementation gate:
+These capabilities express the intended product direction. The proof-carrying
+compiler subset has crossed its own implementation gate; every remaining item
+stays behind a separate gate:
 
 1. context discovery, selection, pruning, budgets, and progressive disclosure;
 2. external artifacts, filtered outputs, and baseline deltas;
@@ -46,7 +57,9 @@ These capabilities express the intended product direction, but each remains behi
 
 ### 3.2 Conditional capabilities
 
-The following are not required dependencies and may be added only after evidence and a separate decision:
+Except for the narrowly authorized optional local SQLite/FTS and TypeScript
+CodeGraph adapters in the v0.3 compiler, the following are not required
+dependencies and may be added only after evidence and a separate decision:
 
 - CodeGraph or another AST/symbol-intelligence adapter;
 - SQLite or native FTS for a measured corpus/latency problem;
@@ -57,7 +70,10 @@ The following are not required dependencies and may be added only after evidence
 - a generic JSON Schema engine or generated runtime types;
 - embeddings, semantic search, or another learned retrieval stage.
 
-CodeGraph must remain optional. SQLite/FTS requires measured need and an ADR superseding ADR-0008. Embeddings, a vector store, hosted RAG, or paid services are not default completion requirements.
+CodeGraph remains optional. ADR-0009 supersedes ADR-0008 only for the separate
+v0.3 hybrid context index; v0.2 document search remains metadata-only/live.
+Embeddings, a vector store, hosted RAG, or paid services are not default
+completion requirements.
 
 ### 3.3 Explicit non-goals
 
@@ -447,4 +463,14 @@ The order may stop after any independently useful slice. Optional integrations, 
 
 ## 15. Next actionable gate
 
-The next implementation proposal should be the narrow v0.3A Context Scout and deterministic-selection slice. It must freeze the candidate/selection contracts, ranking evidence, mandatory-item policy, exact hard limits, CLI shape, compatibility behavior, and acceptance matrix before production code changes. Until that scope is explicitly approved, the only authorized runtime remains the v0.1 baseline plus the v0.2 Document Catalog and lexical search.
+The proof-carrying v0.3 vertical slice has now frozen and authorized candidate
+and selection contracts, ranking evidence, mandatory-item policy, progressive
+expansion, outcome/replay/ablation contracts, exact limits, CLI shape,
+compatibility behavior, threat model, and acceptance matrix. Its implementation
+and verification may proceed only within those documents.
+
+The next **new** scope proposal after that slice should be a bounded artifact
+store/output-filter/delta-context gate. It requires its own contracts,
+architecture, threat/data flow, retention/deletion design, acceptance matrix,
+and `AGENTS.md` authorization. MCP, embeddings, remote services, learned
+ranking, memory, and orchestration remain unauthorized.

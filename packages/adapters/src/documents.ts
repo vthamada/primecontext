@@ -4,7 +4,7 @@ import { lstat, open } from 'node:fs/promises';
 import { basename, extname, resolve } from 'node:path';
 import { PrimeContextError } from '@primecontext/core';
 import { NodeFileSystemAdapter, assertNoSymbolicLinkComponents } from './filesystem.js';
-import { assertPathInsideRoot } from './security.js';
+import { assertPathInsideRoot, isSensitivePath } from './security.js';
 
 const CANONICAL_ROOT_MARKDOWN = new Set([
   'AGENTS.md',
@@ -268,6 +268,15 @@ function containsSensitiveContent(content: string): boolean {
     || containsValidatedBrazilianIdentifier(content);
 }
 
+/**
+ * Conservative local pre-persistence screen shared by v0.2 collection and
+ * v0.3 local indexes. It deliberately returns only a boolean so callers do
+ * not persist or disclose the matching value.
+ */
+export function isSensitiveDocumentContent(content: string): boolean {
+  return containsSensitiveContent(content);
+}
+
 function containsBasicAuthorizationCredential(content: string): boolean {
   const pattern = /\bAuthorization\s*:\s*Basic\s+([A-Za-z0-9+/]{2,}={0,2})(?![A-Za-z0-9+/=])/giu;
   for (const match of content.matchAll(pattern)) {
@@ -511,6 +520,34 @@ export class NodeSha256Hasher {
     const bytes = typeof value === 'string' ? Buffer.from(value, 'utf8') : Buffer.from(value);
     return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
   }
+}
+
+export interface SafeRepositoryTextSource {
+  content: string;
+  size_bytes: number;
+  source_hash: string;
+}
+
+export async function readSafeRepositoryText(
+  root: string,
+  relativePath: string,
+  maxBytes: number,
+): Promise<SafeRepositoryTextSource | undefined> {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 1024 * 1024) {
+    throw new PrimeContextError('CONFIG_ERROR', 'Safe repository text read limit is invalid');
+  }
+  if (isSensitivePath(relativePath)) {
+    throw new PrimeContextError('SECURITY_ERROR', `Sensitive path is blocked: ${relativePath}`);
+  }
+  const read = await readStableBoundedBytes(root, relativePath, maxBytes);
+  if (read.kind === 'oversize') return undefined;
+  const content = decodeUtf8(read.bytes);
+  if (content === undefined || containsSensitiveContent(content)) return undefined;
+  return {
+    content,
+    size_bytes: read.bytes.byteLength,
+    source_hash: new NodeSha256Hasher().hash(read.bytes),
+  };
 }
 
 export class NodeDocumentSourceAdapter {

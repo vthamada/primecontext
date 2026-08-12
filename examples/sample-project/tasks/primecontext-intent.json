@@ -1,0 +1,18 @@
+{
+  "schema_version": "0.3",
+  "task_id": "SAMPLE-001",
+  "task_type": "small_code_fix",
+  "goal": "Preserve proposal versioning behavior while preparing inspectable evidence",
+  "acceptance": [
+    "Proposal versioning behavior remains covered by tests",
+    "The selected context identifies the proposal service"
+  ],
+  "paths": [
+    "src/Proposal/ProposalService.ts",
+    "tests/ProposalVersion.test.ts"
+  ],
+  "terms": [
+    "proposal",
+    "version"
+  ]
+}
