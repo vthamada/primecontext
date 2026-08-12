@@ -7,14 +7,15 @@
     "packages/*"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13"
   },
   "scripts": {
     "build": "tsc -b && npm run contracts:generate --workspace @primecontext/schemas",
     "typecheck": "tsc -b --pretty false && npm run contracts:check --workspace @primecontext/schemas",
     "test": "npm run build && node --test packages/*/dist/*.test.js",
     "check": "npm run typecheck && npm test",
-    "cli": "node packages/cli/dist/bin.js"
+    "cli": "node packages/cli/dist/bin.js",
+    "demo": "npm run build && node scripts/demo.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

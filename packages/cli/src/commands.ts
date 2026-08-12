@@ -23,6 +23,7 @@ import {
   readInternalText,
   readRepositoryJson,
   repositoryRelativePath,
+  stateDirectoryIgnoreEntry,
   writeInternalJson,
   writeInternalText,
 } from './safe-io.js';
@@ -56,7 +57,7 @@ export async function initCommand(root: string): Promise<{ config_path: string; 
 
   const ignorePath = '.gitignore';
   const ignore = await readInternalText(resolvedRoot, ignorePath, MAX_JSON_INPUT_BYTES, { allowMissing: true }) ?? '';
-  const ignoreEntry = `${config.state_dir.replace(/\\/g, '/').replace(/\/$/, '')}/`;
+  const ignoreEntry = stateDirectoryIgnoreEntry(config.state_dir);
   if (!ignore.split(/\r?\n/).includes(ignoreEntry)) {
     const prefix = ignore.length > 0 && !ignore.endsWith('\n') ? '\n' : '';
     await writeInternalText(resolvedRoot, ignorePath, `${ignore}${prefix}${ignoreEntry}\n`);

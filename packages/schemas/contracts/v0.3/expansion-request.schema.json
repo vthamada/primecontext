@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://primecontext.dev/schemas/v0.3/expansion-request.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "task_id",
+    "previous_selection_digest",
+    "known_candidate_ids",
+    "reason",
+    "requested_paths",
+    "requested_symbols",
+    "requested_terms",
+    "additional_budget"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "0.3"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "previous_selection_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "known_candidate_ids": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      }
+    },
+    "reason": {
+      "enum": [
+        "MISSING_CRITERION",
+        "MISSING_REQUIRED_SOURCE",
+        "MISSING_TERM",
+        "CONFLICT_REVIEW"
+      ]
+    },
+    "requested_paths": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024,
+        "pattern": "^(?!/)(?!.*\\\\)(?!.*:)(?!.*[<>\"|?*])(?!.*//)(?!\\.{1,2}(?:/|$))(?!.*\\/\\.{1,2}(?:/|$))(?!.*(?:^|/)(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])[ .]*(?:\\.|/|$))(?!.*[. ](?:/|$))[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+      }
+    },
+    "requested_symbols": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "requested_terms": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "additional_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_items",
+        "max_bytes",
+        "max_estimated_tokens"
+      ],
+      "properties": {
+        "max_items": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8388608
+        },
+        "max_estimated_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        }
+      }
+    }
+  }
+}

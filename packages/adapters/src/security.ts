@@ -3,6 +3,7 @@ import { PrimeContextError } from '@primecontext/core';
 
 const blockedDirectoryNames = new Set([
   '.git',
+  '.obsidian',
   '.primecontext',
   'node_modules',
   '.pnpm-store',

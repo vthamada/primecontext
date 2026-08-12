@@ -4,7 +4,7 @@ PrimeContext v0.1 is currently operated from a source checkout. No npm package o
 
 ## Prerequisites
 
-- Node.js 22 or newer. Node.js 24 LTS is the preferred development line.
+- Node.js 22.13 or newer. Node.js 24 LTS is the preferred development line.
 - npm supplied with Node.js.
 - A local checkout of PrimeContext and a separate target repository.
 

@@ -20,6 +20,18 @@
     "./contracts/v0.1/task-capsule.schema.json": "./contracts/v0.1/task-capsule.schema.json",
     "./contracts/v0.2/document-catalog.schema.json": "./contracts/v0.2/document-catalog.schema.json",
     "./contracts/v0.2/document-search-query.schema.json": "./contracts/v0.2/document-search-query.schema.json",
-    "./contracts/v0.2/document-search-result.schema.json": "./contracts/v0.2/document-search-result.schema.json"
+    "./contracts/v0.2/document-search-result.schema.json": "./contracts/v0.2/document-search-result.schema.json",
+    "./contracts/v0.3/ablation-request.schema.json": "./contracts/v0.3/ablation-request.schema.json",
+    "./contracts/v0.3/ablation-result.schema.json": "./contracts/v0.3/ablation-result.schema.json",
+    "./contracts/v0.3/context-candidate.schema.json": "./contracts/v0.3/context-candidate.schema.json",
+    "./contracts/v0.3/context-envelope.schema.json": "./contracts/v0.3/context-envelope.schema.json",
+    "./contracts/v0.3/context-intent.schema.json": "./contracts/v0.3/context-intent.schema.json",
+    "./contracts/v0.3/context-plan-request.schema.json": "./contracts/v0.3/context-plan-request.schema.json",
+    "./contracts/v0.3/expansion-decision.schema.json": "./contracts/v0.3/expansion-decision.schema.json",
+    "./contracts/v0.3/expansion-request.schema.json": "./contracts/v0.3/expansion-request.schema.json",
+    "./contracts/v0.3/outcome-receipt.schema.json": "./contracts/v0.3/outcome-receipt.schema.json",
+    "./contracts/v0.3/outcome-declaration.schema.json": "./contracts/v0.3/outcome-declaration.schema.json",
+    "./contracts/v0.3/replay-result.schema.json": "./contracts/v0.3/replay-result.schema.json",
+    "./contracts/v0.3/selection-receipt.schema.json": "./contracts/v0.3/selection-receipt.schema.json"
   }
 }

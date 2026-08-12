@@ -7,5 +7,10 @@
   "types": "./dist/index.d.ts",
   "files": ["dist", "!dist/*.test.*"],
   "exports": {".": "./dist/index.js"},
-  "dependencies": {"@primecontext/core": "0.1.0"}
+  "dependencies": {
+    "@primecontext/core": "0.1.0"
+  },
+  "optionalDependencies": {
+    "typescript": "^5.8.3"
+  }
 }

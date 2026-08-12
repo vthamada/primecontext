@@ -52,7 +52,7 @@ Implemented and subject to the current [verification record](verification/v0.2-d
 
 The slice deliberately uses existing packages and portable Node APIs. It adds no new external runtime dependency or service.
 
-Still deferred behind a new specification and explicit authorization:
+Deferred from v0.2 itself and available only through a later scope gate:
 
 - SQLite or native FTS;
 - Context Scout candidate discovery;
@@ -61,15 +61,72 @@ Still deferred behind a new specification and explicit authorization:
 - MCP, embeddings, vectors, semantic search, RAG, hosted services, or web UI;
 - automatic Task Capsule integration, orchestration, snapshots, or memory.
 
-CodeGraph must remain optional if a future gate authorizes it. No retrieval result supports a token-savings or quality-superiority claim without separate A/B evidence.
+The separate v0.3 gate below now authorizes optional local SQLite/FTS and
+TypeScript CodeGraph only for the additive compiler path. Neither changes the
+v0.2 Document Catalog/search contract. No retrieval result supports a
+token-savings or quality-superiority claim without separate A/B evidence.
+
+## v0.3 — Authorized Proof-Carrying Context Compiler vertical slice
+
+The [v0.3 specification](specification/proof-carrying-context-compiler-specification-v0.3.md),
+[architecture](architecture/v0.3-proof-carrying-context-compiler-architecture.md),
+and [ADR-0009](adr/0009-local-hybrid-context-index.md) authorize one integrated,
+locally bounded compiler slice:
+
+- validated `ContextPlanRequest` to deterministic `ContextEnvelope` and a
+  complete linked `SelectionReceipt`;
+- safe fallback discovery plus optional local SQLite/FTS and TypeScript
+  CodeGraph candidate sources;
+- Core-derived mandatory policy, integer scoring, marginal criterion coverage,
+  conflict/missing/truncation status, and exact budgets;
+- bounded progressive expansion with monotonic/idempotent accounting;
+- declared `OutcomeReceipt` storage linked to an exact selection;
+- replay drift comparison and experimental, non-causal ablation derivation;
+- worktree/source freshness, selected-source rereads, local-only ignored state,
+  threat controls, acceptance matrix, CLI contract, and compatibility tests.
+
+This gate preserves all v0.1/v0.2 public contracts and commands. SQLite and
+CodeGraph remain optional adapters and cannot supply Core scores or mandatory
+status. FTS state is separate from the v0.2 metadata-only catalog and is rebuilt
+in full. The safe non-indexed fallback remains a first-class supported path.
+
+The additive [v0.3 usability extension](specification/agent-usability-extension-v0.3.md)
+also authorizes the local process-JSON surface, simple `ContextIntent`,
+capability/doctor commands, disposable demo, and non-executing
+generic/Codex/Claude Code instruction templates. This provides interoperability
+without pulling MCP or host SDKs into the product; actual host execution and
+distribution remain separate evidence/release gates.
+
+The additive [zero-configuration extension](specification/zero-config-automation-extension-v0.3.md)
+also authorizes idempotent `setup`, plain-language `prepare`, deterministic
+internal intent generation, and best-effort local indexing with fail-closed
+security/freshness behavior. It removes JSON authoring from the human path
+without weakening the process-JSON agent protocol.
+
+Not authorized in v0.3:
+
+- MCP or any other remote/integration protocol;
+- embeddings, vectors, semantic/learned ranking, hosted RAG, or network access;
+- telemetry, web UI, automatic multi-agent orchestration, tool execution, or
+  external/repository writes;
+- generated summaries, adaptive/global memory, or a new package;
+- state-of-the-art, causal, savings, or quality claims without the applicable
+  benchmark and human gates.
+
+Scope authorization does not equal release authorization. The authorized v0.3
+vertical implementation and its acceptance evidence are recorded in the
+[v0.3 verification record](verification/v0.3-proof-carrying-context-compiler-verification.md).
+Benchmark, causality, superiority, licensing, naming, publication, and release
+remain separate gates.
 
 ## Later direction, not current scope
 
 The [post-v0.2 evolution specification](specification/post-v0.2-evolution-specification.md) inventories the complete candidate path, dependencies, optional tracks, v1.0 outcome gates, and human decisions. It is a planning baseline and does not authorize production changes.
 
-Potential later phases remain subject to separately approved executable specifications and evidence:
+Potential work beyond the approved v0.3 vertical slice remains subject to
+separately approved executable specifications and evidence:
 
-- v0.3: progressive disclosure runtime, pruning, artifact store, output filtering, and delta context;
+- later v0.3 extensions: artifact store, output filtering, and delta context;
 - v0.4: expanded observability, benchmark reporting, and quality analysis;
 - v0.5: integration surfaces such as a thin MCP adapter and generic agent examples;
 - v0.6: selective experience retrieval without global memory dumps.

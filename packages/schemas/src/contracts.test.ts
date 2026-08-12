@@ -6,20 +6,33 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
+  ablationRequestSchema,
+  ablationResultSchema,
   compactHandoffSchema,
   contextBudgetSchema,
   documentCatalogSchema,
   documentSearchQuerySchema,
   documentSearchResultSchema,
+  contextCandidateSchema,
+  contextEnvelopeSchema,
+  contextIntentSchema,
+  contextPlanRequestSchema,
+  expansionDecisionSchema,
+  expansionRequestSchema,
   metricRecordSchema,
   primeContextConfigSchema,
+  outcomeReceiptSchema,
+  outcomeDeclarationSchema,
+  replayResultSchema,
   repoMapSchema,
   taskCapsuleSchema,
+  selectionReceiptSchema,
 } from './index.js';
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const contractDirectory = join(packageRoot, 'contracts', 'v0.1');
 const v02ContractDirectory = join(packageRoot, 'contracts', 'v0.2');
+const v03ContractDirectory = join(packageRoot, 'contracts', 'v0.3');
 const expectedContracts = [
   ['compact-handoff.schema.json', compactHandoffSchema],
   ['context-budget.schema.json', contextBudgetSchema],
@@ -32,6 +45,20 @@ const expectedV02Contracts = [
   ['document-catalog.schema.json', documentCatalogSchema],
   ['document-search-query.schema.json', documentSearchQuerySchema],
   ['document-search-result.schema.json', documentSearchResultSchema],
+] as const;
+const expectedV03Contracts = [
+  ['ablation-request.schema.json', ablationRequestSchema],
+  ['ablation-result.schema.json', ablationResultSchema],
+  ['context-candidate.schema.json', contextCandidateSchema],
+  ['context-envelope.schema.json', contextEnvelopeSchema],
+  ['context-intent.schema.json', contextIntentSchema],
+  ['context-plan-request.schema.json', contextPlanRequestSchema],
+  ['expansion-decision.schema.json', expansionDecisionSchema],
+  ['expansion-request.schema.json', expansionRequestSchema],
+  ['outcome-declaration.schema.json', outcomeDeclarationSchema],
+  ['outcome-receipt.schema.json', outcomeReceiptSchema],
+  ['replay-result.schema.json', replayResultSchema],
+  ['selection-receipt.schema.json', selectionReceiptSchema],
 ] as const;
 
 test('ships deterministic v0.1 JSON contracts matching the exported schema objects', async () => {
@@ -99,6 +126,18 @@ test('exposes every v0.2 document contract through the schemas package manifest'
   };
   for (const [name] of expectedV02Contracts) {
     const subpath = `./contracts/v0.2/${name}`;
+    assert.equal(manifest.exports?.[subpath], subpath);
+  }
+});
+
+test('ships and exports deterministic additive v0.3 context contracts', async () => {
+  const physicalNames = (await readdir(v03ContractDirectory)).filter((name) => name.endsWith('.schema.json')).sort();
+  assert.deepEqual(physicalNames, expectedV03Contracts.map(([name]) => name));
+  const manifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')) as { exports?: Record<string, string> };
+  for (const [name, exportedContract] of expectedV03Contracts) {
+    const contents = await readFile(join(v03ContractDirectory, name), 'utf8');
+    assert.equal(contents, `${JSON.stringify(exportedContract, null, 2)}\n`);
+    const subpath = `./contracts/v0.3/${name}`;
     assert.equal(manifest.exports?.[subpath], subpath);
   }
 });

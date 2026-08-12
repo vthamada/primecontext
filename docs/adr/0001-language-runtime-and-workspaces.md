@@ -9,7 +9,7 @@ PrimeContext must be local-first, agent-agnostic, easy to install, CLI-first, an
 
 ## Decision
 
-Use TypeScript in strict mode on Node.js 22+, ESM modules, and npm workspaces. Test Node 22 and Node 24 in CI when CI is added. Node 24 LTS is the preferred development line.
+Use TypeScript in strict mode on Node.js 22.13+, ESM modules, and npm workspaces. Test supported Node 22 and Node 24 versions in CI when CI is added. Node 24 LTS is the preferred development line.
 
 ## Consequences
 

@@ -39,9 +39,39 @@ The implementation and its current working-tree evidence are recorded in the [v0
 
 This slice does not implement FTS/SQLite, semantic search, embeddings, Context Scout, general ranking/pruning, CodeGraph, MCP, hosted services, telemetry, memory, or automatic Task Capsule integration.
 
+## Authorized v0.3 slice: Proof-Carrying Context Compiler
+
+The current v0.3 implementation gate is a local, additive context compiler:
+
+- validated `ContextPlanRequest` to deterministic `ContextEnvelope` and linked
+  complete `SelectionReceipt`;
+- explainable Core-derived mandatory retention, integer scoring, marginal
+  acceptance-criterion coverage, conflicts, missing evidence, and hard budgets;
+- safe filesystem/document fallback plus optional local SQLite/FTS and the
+  PrimeContext-internal TypeScript structural-graph candidate adapter;
+- bounded progressive expansion, declared `OutcomeReceipt` storage, replay
+  drift comparison, and experimental non-causal ablation;
+- source/worktree freshness, selected-source rereads, local ignored state,
+  threat controls, and complete v0.1/v0.2 compatibility requirements.
+
+SQLite/FTS and the internal structural graph are evidence sources, not the
+innovation or a required foundation. The internal graph is not the third-party
+`@colbymchenry/codegraph` project. These adapters cannot supply Core scores or
+mandatory status, and the v0.2
+Document Catalog/search remains metadata-only/live. The compiler makes no
+state-of-the-art, causal, token-savings, or quality-superiority claim. Its scope
+authorization and its implementation verification are separate gates.
+
+The current working-tree implementation evidence is recorded in the
+[v0.3 Proof-Carrying Context Compiler Verification](docs/verification/v0.3-proof-carrying-context-compiler-verification.md).
+The additive human/agent onboarding surface has its own
+[v0.3 Agent Usability Extension Verification](docs/verification/v0.3-agent-usability-extension-verification.md).
+That record verifies the authorized vertical slice only; it is not a release,
+benchmark, causality, or state-of-the-art claim.
+
 ## Requirements
 
-- Node.js 22 or newer.
+- Node.js 22.13 or newer.
 - Node.js 24 LTS is the preferred line for new development environments.
 
 ## Development setup
@@ -50,6 +80,20 @@ This slice does not implement FTS/SQLite, semantic search, embeddings, Context S
 npm ci
 npm run check
 ```
+
+## Try it in one command
+
+After `npm ci`, run the disposable local demonstration:
+
+```bash
+npm run demo
+```
+
+It builds the checkout, creates a synthetic repository in the operating-system
+temporary directory, runs the same zero-configuration `prepare` command a
+person would use, compiles one proof-carrying context package, prints a bounded
+JSON summary, and removes the repository. It
+uses no model, agent SDK, network service, MCP server, or private data.
 
 Build:
 
@@ -74,7 +118,23 @@ Then run the built binary with Node from the target repository:
 
 ```bash
 cd /absolute/path/to/target-repository
+node /absolute/path/to/primecontext/packages/cli/dist/bin.js setup
+node /absolute/path/to/primecontext/packages/cli/dist/bin.js prepare "Fix the login validation" --accept "Existing valid logins still pass"
+```
+
+These are the recommended human commands. `setup` creates safe defaults only
+when missing, and `prepare` converts the sentence and optional repeated flags
+into the strict internal contract, attempts the local index, and uses safe
+fallback automatically. A person does not need to author JSON, task IDs,
+snapshots, hashes, or budgets.
+
+The lower-level machine and compatibility commands remain available:
+
+```bash
 node /absolute/path/to/primecontext/packages/cli/dist/bin.js init
+node /absolute/path/to/primecontext/packages/cli/dist/bin.js capabilities
+node /absolute/path/to/primecontext/packages/cli/dist/bin.js doctor
+node /absolute/path/to/primecontext/packages/cli/dist/bin.js context prepare --from tasks/primecontext-intent.json
 node /absolute/path/to/primecontext/packages/cli/dist/bin.js map
 node /absolute/path/to/primecontext/packages/cli/dist/bin.js docs index
 node /absolute/path/to/primecontext/packages/cli/dist/bin.js docs search "document retrieval" --limit 5 --authority specification
@@ -84,13 +144,45 @@ node /absolute/path/to/primecontext/packages/cli/dist/bin.js handoff validate ev
 node /absolute/path/to/primecontext/packages/cli/dist/bin.js metrics record evidence/arm-b.json
 node /absolute/path/to/primecontext/packages/cli/dist/bin.js metrics
 node /absolute/path/to/primecontext/packages/cli/dist/bin.js benchmark --a evidence/arm-a.json --b evidence/arm-b.json
+node /absolute/path/to/primecontext/packages/cli/dist/bin.js context index
+node /absolute/path/to/primecontext/packages/cli/dist/bin.js context plan --from tasks/TASK-001-context-plan.json
+node /absolute/path/to/primecontext/packages/cli/dist/bin.js context inspect TASK-001
+node /absolute/path/to/primecontext/packages/cli/dist/bin.js context expand TASK-001 --from tasks/TASK-001-expansion.json
+node /absolute/path/to/primecontext/packages/cli/dist/bin.js context outcome TASK-001 --from evidence/TASK-001-outcome.json
+node /absolute/path/to/primecontext/packages/cli/dist/bin.js context replay TASK-001
+node /absolute/path/to/primecontext/packages/cli/dist/bin.js context ablate TASK-001 --candidate sha256:<64-lowercase-hex>
 ```
 
-Input files are repository-local and validated before domain execution. See the [v0.1 foundations CLI guide](docs/cli-usage-v0.1.md) and the [v0.2 document retrieval CLI guide](docs/cli-usage-v0.2.md).
+Input files are repository-local and validated before domain execution. See the [v0.1 foundations CLI guide](docs/cli-usage-v0.1.md), [v0.2 document retrieval CLI guide](docs/cli-usage-v0.2.md), and [v0.3 compiler CLI guide](docs/cli-usage-v0.3.md). The v0.3 guide marks the implementation/verification boundary; do not assume an unverified command is available in a globally installed binary.
+
+For agents, `context prepare --from -` accepts one bounded JSON `ContextIntent`
+over standard input and returns the complete request, envelope, receipt, and
+stored-plan path as one JSON object. The [agent integration guide](docs/agent-integration-v0.3.md)
+and templates under `integrations/` use the same process protocol for generic
+agents, Codex, and Claude Code. Template parity is verified locally; this is not
+a claim that either proprietary host was executed.
 
 ### `init`
 
-Creates `primecontext.config.json` and local `.primecontext/` state. Existing configuration is never silently overwritten.
+Creates `primecontext.config.json`, local `.primecontext/` state, and the exact
+`.gitignore` protection required by v0.3 context commands. Existing
+configuration is never silently overwritten.
+
+### `setup` and `prepare`
+
+`setup` is the idempotent zero-configuration entry point: it applies the
+existing safe defaults, protects local state, and returns diagnostics and
+capabilities. `prepare "<goal>"` generates a deterministic internal intent,
+attempts the optional local index, and compiles the normal proof-carrying
+package. Only accelerator unavailability falls back; validation, containment,
+security, and repository/worktree or selected-source freshness failures remain
+blocking. A stale optional accelerator index may be discarded in favor of
+freshly recollected safe sources.
+
+Repository-local Markdown notes also work as knowledge-vault evidence without
+a connector, including notes edited with Obsidian. PrimeContext excludes the
+`.obsidian` settings directory and does not yet attach external vaults, follow
+Obsidian backlinks, use Obsidian Sync, or write notes.
 
 ### `map`
 
@@ -103,6 +195,15 @@ Creates `.primecontext/repo-map.json`. v0.1 semantics are deterministic and evid
 ### `task`
 
 Reads a task definition, applies the configured Context Budget, attaches Git/worktree metadata when available, validates the result, and stores `.primecontext/capsules/<task-id>.json`.
+
+### `context index`, `plan`, `inspect`, `expand`, `outcome`, `replay`, and `ablate`
+
+These additive v0.3 commands build the optional local hybrid index, compile and
+inspect proof-carrying context plans, request bounded additional evidence,
+append a declared outcome, compare deterministic replay against current source,
+and derive a non-causal experimental ablation. They write validated ignored
+state only under the configured `.primecontext` directory; they neither execute
+an agent nor edit project sources or external systems.
 
 ### `metrics record` and `metrics`
 
@@ -118,13 +219,13 @@ Budget defaults originate from the product specification's experimental initial/
 
 ## Security defaults
 
-PrimeContext blocks sensitive paths before content reads, including `.env*`, credentials, API keys/tokens, passwords, cookies, PII, private uploads/dumps/backups, `.git`, `node_modules`, and `.primecontext`. Document retrieval adds strict UTF-8 and high-confidence content checks before cataloging, then reapplies the same collection controls before returning excerpts. Discovery skips symlinks and Windows junctions, task IDs cannot become paths, and existing path components are checked before repository reads or generated-state writes. Inputs and discovery also have explicit byte, record, depth, value, entry, exclude, Git-time, and Git-output limits.
+PrimeContext blocks sensitive paths before content reads, including `.env*`, credentials, API keys/tokens, passwords, cookies, PII, private uploads/dumps/backups, `.git`, `node_modules`, and `.primecontext`. Document retrieval adds strict UTF-8 and high-confidence content checks before cataloging, then reapplies the same collection controls before returning excerpts. v0.3 separately permits a local screened full-text index, binds it to the complete accepted-source manifest, rereads selected source bytes, and treats all repository/index/graph content as untrusted data. Discovery skips symlinks and Windows junctions, task IDs cannot become paths, and existing path components are checked before repository reads or generated-state writes. Inputs and discovery also have explicit byte, record, depth, value, entry, exclude, Git-time, and Git-output limits.
 
 Git enrichment is optional and fail-open: mapping still works without Git metadata.
 
 See `SECURITY.md` and `docs/adr/0005-safe-discovery-and-fail-open.md`.
 
-PrimeContext is not an operating-system sandbox and local state is not encrypted. Review the [v0.1 security limits](docs/security-and-residual-risks-v0.1.md) and [v0.2 retrieval residual risks](docs/security-and-residual-risks-v0.2.md) before using it with a sensitive repository.
+PrimeContext is not an operating-system sandbox and local state is not encrypted. Review the [v0.1 security limits](docs/security-and-residual-risks-v0.1.md), [v0.2 retrieval residual risks](docs/security-and-residual-risks-v0.2.md), and [v0.3 threat model/residual risks](docs/security-and-residual-risks-v0.3.md) before using it with a sensitive repository.
 
 ## Architecture
 
@@ -134,6 +235,8 @@ Start with the [canonical documentation index](docs/README.md), then:
 - `docs/architecture/v0.1-implementation-architecture.md`
 - `docs/specification/document-retrieval-specification-v0.2.md`
 - `docs/architecture/v0.2-document-retrieval-architecture.md`
+- `docs/specification/proof-carrying-context-compiler-specification-v0.3.md`
+- `docs/architecture/v0.3-proof-carrying-context-compiler-architecture.md`
 - `docs/adr/`
 
 Physical v0.1 packages:
@@ -161,7 +264,15 @@ Use the [conservative A/B methodology](docs/benchmark-methodology-v0.1.md). File
 
 ## Roadmap
 
-The [phase-gated roadmap](docs/roadmap.md) keeps v0.1 foundations separate from the specifically authorized Document Catalog/lexical-search slice. The [post-v0.2 evolution specification](docs/specification/post-v0.2-evolution-specification.md) inventories the remaining candidate phases, optional integrations, and v1.0 readiness gates without authorizing their implementation. Context Scout, general ranking/pruning, SQLite/FTS, and optional CodeGraph remain deferred behind a new scope gate.
+The [phase-gated roadmap](docs/roadmap.md) keeps v0.1 foundations, v0.2
+Document Catalog/live lexical search, and the bounded v0.3 proof-carrying
+compiler as separate compatibility/scope gates. The
+[post-v0.2 evolution specification](docs/specification/post-v0.2-evolution-specification.md)
+inventories broader candidate phases, optional integrations, and v1.0 readiness
+requirements. Only the v0.3 vertical slice's local optional SQLite/FTS and
+TypeScript CodeGraph sources are newly authorized; MCP, embeddings, remote
+services, learned ranking, memory, orchestration, and broader later phases
+remain deferred.
 
 ## License
 
