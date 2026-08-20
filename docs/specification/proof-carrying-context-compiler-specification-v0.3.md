@@ -168,6 +168,7 @@ OMIT_UNSAFE_SOURCE
 OMIT_INVALID_SOURCE
 OMIT_SOURCE_TRUNCATED
 OMIT_CONFLICT_REVIEW
+OMIT_SUFFICIENT_EVIDENCE
 ```
 
 A SHA-256 digest proves byte identity under the documented canonicalization. It
@@ -269,7 +270,12 @@ line start, symbol, and candidate ID in ordinal order.
    `EXHAUSTED`/`INSUFFICIENT_EVIDENCE` without silently dropping one.
 6. Greedily add the candidate with the greatest number of newly covered
    criterion terms; break ties by total integer score and the ordinal order.
-7. Fill remaining budget by score and ordinal order.
+7. Continue only for required marginal value, an explicit expansion request,
+   or unresolved authority review. Once requirements are mechanically
+   sufficient and none of those conditions applies, record
+   `OMIT_SUFFICIENT_EVIDENCE`; a larger unused budget alone is not a reason to
+   add generic evidence. Integer score and ordinal order remain tie-breakers,
+   not a budget-filling phase.
 8. Recompute all totals, coverage, statuses, and canonical digests.
 
 No source can silently exceed the budget. An optional adapter failure is
@@ -295,6 +301,11 @@ canonical source. It may persist screened source text only under
   updates that could retain deleted/newly blocked content are not authorized.
 - Plan/replay verifies the complete accepted-source manifest digest before
   using FTS candidates, then rereads and rehashes selected source ranges.
+- Search begins one read transaction before the first schema, integrity,
+  toolchain, metadata, source-row, content, FTS-equivalence, or digest check.
+  The final MATCH query and bounded hit materialization use that same snapshot.
+  Success commits only after materialization; every failure rolls back
+  best-effort and always closes the connection.
 - Missing FTS5, unsupported secure-delete controls, a locked/corrupt database,
   or a stale manifest records an optional-source failure and uses fallback.
 
@@ -319,7 +330,10 @@ syntactically resolved direct-call edges.
 
 ## 7. Resource ceilings
 
-All ceilings are hard and include generated output where applicable.
+All byte, count, depth, and structural ceilings are hard and include generated
+output where applicable. The optional-adapter time limit is a cooperative
+deadline at bounded in-process checkpoints, as qualified in its row below; it
+is not a hard CPU or wall-clock quota.
 
 | Resource | Ceiling |
 |---|---:|
@@ -359,8 +373,8 @@ Indexed candidates are usable only when the stored manifest digest matches a
 fresh safe collection. Selected excerpts are reread through the safe bounded
 adapter and their hashes rechecked immediately before envelope persistence and
 stdout. A changed, missing, newly linked, newly excluded, newly sensitive, or
-unreadable selected source is omitted as stale/unsafe and affects evidence
-status.
+unreadable selected source fails freshness/security closed. No partial envelope
+is published from the changed observation.
 
 Potential conflict means materially different hashes occupy the same canonical
 authority/topic/symbol locator. The compiler reports both sources and does not

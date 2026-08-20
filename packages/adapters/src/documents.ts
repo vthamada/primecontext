@@ -1,10 +1,19 @@
 import { createHash } from 'node:crypto';
-import type { Stats } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
 import { basename, extname, resolve } from 'node:path';
 import { PrimeContextError } from '@primecontext/core';
-import { NodeFileSystemAdapter, assertNoSymbolicLinkComponents } from './filesystem.js';
+import {
+  DEFAULT_REPOSITORY_DISCOVERY_LIMITS,
+  NodeFileSystemAdapter,
+  assertNoSymbolicLinkComponents,
+  isConfiguredRepositoryPathExcluded,
+  normalizeConfiguredRepositoryExcludes,
+  type RepositoryDiscoveryTruncationReason,
+  type RepositoryWalkResult,
+} from './filesystem.js';
+import { assertPhysicalRepositorySourcePathAllowed } from './physical-path.js';
 import { assertPathInsideRoot, isSensitivePath } from './security.js';
+import { sameRegularFileSnapshot } from './file-snapshot.js';
 
 const CANONICAL_ROOT_MARKDOWN = new Set([
   'AGENTS.md',
@@ -123,6 +132,18 @@ export interface CollectedDocumentSource {
   metadata: DocumentSourceMetadata;
 }
 
+export type DocumentCollectionTruncationReason =
+  | RepositoryDiscoveryTruncationReason
+  | 'MAX_DOCUMENTS'
+  | 'MAX_TOTAL_BYTES';
+
+const DOCUMENT_COLLECTION_TRUNCATION_REASON_ORDER: readonly DocumentCollectionTruncationReason[] = [
+  'MAX_ENTRIES',
+  'MAX_DEPTH',
+  'MAX_DOCUMENTS',
+  'MAX_TOTAL_BYTES',
+];
+
 export interface DocumentSourceCollectionResult {
   sources: CollectedDocumentSource[];
   discovered_path_count: number;
@@ -133,6 +154,131 @@ export interface DocumentSourceCollectionResult {
   skipped_oversize_count: number;
   skipped_binary_count: number;
   skipped_sensitive_content_count: number;
+  blocked_policy_count?: number;
+  blocked_policy_kinds?: {
+    operational: number;
+    security: number;
+    governance: number;
+  };
+  discovery_truncated?: boolean;
+  discovery_truncation_reasons?: DocumentCollectionTruncationReason[];
+  discovery_visited_entry_count?: number;
+  discovery_capacity_omitted_entry_count?: number;
+  capacity_omitted_document_count?: number;
+}
+
+export interface DocumentSourceCollectionOptions {
+  capacityLimitBehavior?: 'error' | 'truncate';
+  acceptedRepositoryWalk?: RepositoryWalkResult;
+}
+
+function isCanonicalRepositoryRelativePath(relativePath: string): boolean {
+  return relativePath.split('/').every((segment) => (
+    segment.length > 0 && segment !== '.' && segment !== '..'
+  ));
+}
+
+function assertDataRecord(
+  value: unknown,
+  requiredKeys: readonly string[],
+  optionalKeys: readonly string[] = [],
+): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)
+    || Object.getPrototypeOf(value) !== Object.prototype) {
+    throw new PrimeContextError('CONFIG_ERROR', 'Invalid accepted repository observation');
+  }
+  const allowed = new Set([...requiredKeys, ...optionalKeys]);
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Reflect.ownKeys(value).some((key) => typeof key !== 'string' || !allowed.has(key))) {
+    throw new PrimeContextError('CONFIG_ERROR', 'Invalid accepted repository observation');
+  }
+  for (const key of requiredKeys) {
+    if (!Object.hasOwn(descriptors, key)) {
+      throw new PrimeContextError('CONFIG_ERROR', 'Invalid accepted repository observation');
+    }
+  }
+  for (const descriptor of Object.values(descriptors)) {
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+      throw new PrimeContextError('CONFIG_ERROR', 'Invalid accepted repository observation');
+    }
+  }
+  return Object.fromEntries(Object.entries(descriptors).map(([key, descriptor]) => [key, descriptor.value]));
+}
+
+function acceptedRepositoryWalk(
+  root: string,
+  configuredExcludes: ReadonlySet<string>,
+  value: unknown,
+): RepositoryWalkResult {
+  const record = assertDataRecord(value, [
+    'paths',
+    'excluded_path_count',
+    'truncated',
+    'truncation_reasons',
+    'visited_entry_count',
+    'capacity_omitted_entry_count',
+  ]);
+  if (!Array.isArray(record.paths)
+    || record.paths.length > DEFAULT_REPOSITORY_DISCOVERY_LIMITS.maxEntries
+    || !Number.isSafeInteger(record.excluded_path_count) || (record.excluded_path_count as number) < 0
+    || typeof record.truncated !== 'boolean'
+    || !Array.isArray(record.truncation_reasons)
+    || record.truncation_reasons.length > 2
+    || !Number.isSafeInteger(record.visited_entry_count) || (record.visited_entry_count as number) < 0
+    || !Number.isSafeInteger(record.capacity_omitted_entry_count) || (record.capacity_omitted_entry_count as number) < 0) {
+    throw new PrimeContextError('CONFIG_ERROR', 'Invalid accepted repository observation');
+  }
+  const reasons = record.truncation_reasons as unknown[];
+  if (reasons.some((reason) => reason !== 'MAX_ENTRIES' && reason !== 'MAX_DEPTH')
+    || new Set(reasons).size !== reasons.length
+    || record.truncated !== (reasons.length > 0)) {
+    throw new PrimeContextError('CONFIG_ERROR', 'Invalid accepted repository observation');
+  }
+  const paths = record.paths.map((item) => {
+    const path = assertDataRecord(item, ['relative_path', 'kind'], ['size_bytes']);
+    if (typeof path.relative_path !== 'string' || path.relative_path.length === 0
+      || path.relative_path.length > 1_024 || path.relative_path.includes('\\')
+      || (path.kind !== 'file' && path.kind !== 'directory')
+      || (path.kind === 'file'
+        && (!Number.isSafeInteger(path.size_bytes) || (path.size_bytes as number) < 0))
+      || (path.kind === 'directory' && path.size_bytes !== undefined)) {
+      throw new PrimeContextError('CONFIG_ERROR', 'Invalid accepted repository observation');
+    }
+    if (!isCanonicalRepositoryRelativePath(path.relative_path)) {
+      throw new PrimeContextError(
+        'SECURITY_ERROR',
+        'Accepted repository observation contains a non-canonical path',
+      );
+    }
+    assertPathInsideRoot(root, path.relative_path);
+    if (isSensitivePath(path.relative_path)
+      || isConfiguredRepositoryPathExcluded(path.relative_path, configuredExcludes)) {
+      throw new PrimeContextError('SECURITY_ERROR', 'Accepted repository observation contains a blocked path');
+    }
+    const kind = path.kind as 'file' | 'directory';
+    return {
+      relative_path: path.relative_path,
+      kind,
+      ...(kind === 'file' ? { size_bytes: path.size_bytes as number } : {}),
+    };
+  });
+  for (let index = 1; index < paths.length; index += 1) {
+    if (ordinalCompare(paths[index - 1]!.relative_path, paths[index]!.relative_path) >= 0) {
+      throw new PrimeContextError('CONFIG_ERROR', 'Accepted repository observation paths must be unique and ordinal');
+    }
+  }
+  if ((record.visited_entry_count as number) < paths.length
+    || (record.excluded_path_count as number) > (record.visited_entry_count as number)) {
+    throw new PrimeContextError('CONFIG_ERROR', 'Invalid accepted repository observation counters');
+  }
+  return {
+    paths,
+    excluded_path_count: record.excluded_path_count as number,
+    truncated: record.truncated,
+    truncation_reasons: reasons as RepositoryDiscoveryTruncationReason[],
+    visited_entry_count: record.visited_entry_count as number,
+    capacity_omitted_entry_count: record.capacity_omitted_entry_count as number,
+  };
 }
 
 function boundedLimit(
@@ -180,19 +326,9 @@ function isDocumentCorpusPath(relativePath: string): boolean {
   return lower.startsWith('docs/') && lower.endsWith('.md');
 }
 
-function sameFileSnapshot(left: Stats, right: Stats): boolean {
-  return left.isFile()
-    && right.isFile()
-    && left.dev === right.dev
-    && left.ino === right.ino
-    && left.size === right.size
-    && left.mtimeMs === right.mtimeMs
-    && left.ctimeMs === right.ctimeMs;
-}
-
 type StableReadResult =
   | { kind: 'content'; bytes: Uint8Array }
-  | { kind: 'oversize' };
+  | { kind: 'oversize'; observed_size_bytes: number };
 
 async function readStableBoundedBytes(
   root: string,
@@ -208,15 +344,19 @@ async function readStableBoundedBytes(
       throw new PrimeContextError('SECURITY_ERROR', 'Symbolic-link documents are not readable');
     }
     if (!pathBefore.isFile()) throw new PrimeContextError('IO_ERROR', 'Document source is not a regular file');
-    if (pathBefore.size > maxBytes) return { kind: 'oversize' };
+    if (pathBefore.size > maxBytes) {
+      return { kind: 'oversize', observed_size_bytes: pathBefore.size };
+    }
 
     const handle = await open(absolutePath, 'r');
     try {
       const handleBefore = await handle.stat();
-      if (!sameFileSnapshot(pathBefore, handleBefore)) {
+      if (!sameRegularFileSnapshot(pathBefore, handleBefore)) {
         throw new PrimeContextError('SECURITY_ERROR', 'Document source changed before its bounded read');
       }
-      if (handleBefore.size > maxBytes) return { kind: 'oversize' };
+      if (handleBefore.size > maxBytes) {
+        return { kind: 'oversize', observed_size_bytes: handleBefore.size };
+      }
 
       const buffer = Buffer.alloc(Math.min(maxBytes + 1, handleBefore.size + 1));
       let offset = 0;
@@ -230,13 +370,13 @@ async function readStableBoundedBytes(
       const pathAfter = await lstat(absolutePath);
       await assertNoSymbolicLinkComponents(resolvedRoot, relativePath);
       if (
-        !sameFileSnapshot(handleBefore, handleAfter)
-        || !sameFileSnapshot(handleAfter, pathAfter)
+        !sameRegularFileSnapshot(handleBefore, handleAfter)
+        || !sameRegularFileSnapshot(handleAfter, pathAfter)
         || offset !== handleAfter.size
       ) {
         throw new PrimeContextError('SECURITY_ERROR', 'Document source changed during its bounded read');
       }
-      if (offset > maxBytes) return { kind: 'oversize' };
+      if (offset > maxBytes) return { kind: 'oversize', observed_size_bytes: offset };
       return { kind: 'content', bytes: buffer.subarray(0, offset) };
     } finally {
       await handle.close();
@@ -552,25 +692,45 @@ export async function readSafeRepositoryText(
 
 export class NodeDocumentSourceAdapter {
   private readonly excludes: string[];
+  private readonly configuredExcludes: ReadonlySet<string>;
   private readonly limits: DocumentDiscoveryLimits;
   private readonly hasher = new NodeSha256Hasher();
 
   constructor(excludes: string[] = [], limits: Partial<DocumentDiscoveryLimits> = {}) {
     this.excludes = [...excludes];
+    this.configuredExcludes = normalizeConfiguredRepositoryExcludes(excludes);
     this.limits = resolveLimits(limits);
   }
 
-  async collect(root: string): Promise<DocumentSourceCollectionResult> {
+  async collect(
+    root: string,
+    options: DocumentSourceCollectionOptions = {},
+  ): Promise<DocumentSourceCollectionResult> {
+    if (typeof options !== 'object' || options === null || Array.isArray(options)
+      || Object.keys(options).some((key) => key !== 'capacityLimitBehavior' && key !== 'acceptedRepositoryWalk')
+      || (options.capacityLimitBehavior !== undefined
+        && options.capacityLimitBehavior !== 'error'
+        && options.capacityLimitBehavior !== 'truncate')) {
+      throw new PrimeContextError('CONFIG_ERROR', 'Invalid document collection options');
+    }
+    const truncateAtCapacity = options.capacityLimitBehavior === 'truncate';
     const resolvedRoot = resolve(root);
-    const walk = await new NodeFileSystemAdapter(this.excludes).walk(resolvedRoot);
-    const candidates = walk.paths
+    const fileSystem = new NodeFileSystemAdapter(this.excludes);
+    const providedWalk = options.acceptedRepositoryWalk === undefined
+      ? undefined
+      : acceptedRepositoryWalk(resolvedRoot, this.configuredExcludes, options.acceptedRepositoryWalk);
+    const auditedWalk = providedWalk ?? (truncateAtCapacity
+      ? await fileSystem.walk(resolvedRoot, { capacityLimitBehavior: 'truncate' })
+      : undefined);
+    const walk = auditedWalk ?? await fileSystem.walk(resolvedRoot);
+    const discoveredCandidates = walk.paths
       .filter((item) => item.kind === 'file' && isDocumentCorpusPath(item.relative_path))
       .sort((left, right) => ordinalCompare(left.relative_path, right.relative_path));
     const corpusExcludedCount = walk.paths.filter(
       (item) => item.kind === 'file' && !isDocumentCorpusPath(item.relative_path),
     ).length;
 
-    if (candidates.length > this.limits.maxDocuments) {
+    if (discoveredCandidates.length > this.limits.maxDocuments && !truncateAtCapacity) {
       throw new PrimeContextError(
         'SECURITY_ERROR',
         'Document discovery document count limit exceeded',
@@ -583,54 +743,131 @@ export class NodeDocumentSourceAdapter {
     let skippedOversizeCount = 0;
     let skippedBinaryCount = 0;
     let skippedSensitiveContentCount = 0;
+    let blockedPolicyCount = 0;
+    let capacityOmittedDocumentCount = 0;
+    const truncationReasons = new Set<DocumentCollectionTruncationReason>(
+      auditedWalk?.truncation_reasons ?? [],
+    );
+    const blockedPolicyKinds = { operational: 0, security: 0, governance: 0 };
+    const recordBlockedPolicy = (classification: ReturnType<typeof documentAuthority>): void => {
+      if (classification.authority !== 'policy') return;
+      blockedPolicyCount += 1;
+      if (classification.authority_basis.kind !== 'convention') {
+        blockedPolicyKinds.operational += 1;
+      } else if (classification.authority_basis.rule_id === 'root-security-file') {
+        blockedPolicyKinds.security += 1;
+      } else if (classification.authority_basis.rule_id === 'root-code-of-conduct-file') {
+        blockedPolicyKinds.governance += 1;
+      } else {
+        blockedPolicyKinds.operational += 1;
+      }
+    };
+    if (auditedWalk?.truncated === true) {
+      // The unvisited suffix is deliberately opaque. One conservative sentinel
+      // prevents a potentially omitted AGENTS policy from becoming silent READY.
+      blockedPolicyCount += 1;
+      blockedPolicyKinds.operational += 1;
+    }
 
-    for (const candidate of candidates) {
+    const candidates = discoveredCandidates.slice(0, this.limits.maxDocuments);
+    if (candidates.length < discoveredCandidates.length) {
+      truncationReasons.add('MAX_DOCUMENTS');
+      const omittedCandidates = discoveredCandidates.slice(candidates.length);
+      capacityOmittedDocumentCount += omittedCandidates.length;
+      for (const candidate of omittedCandidates) {
+        recordBlockedPolicy(documentAuthority(candidate.relative_path));
+      }
+    }
+
+    let candidateDocumentCount = 0;
+    const truncateCandidateSuffix = (startIndex: number): void => {
+      truncationReasons.add('MAX_TOTAL_BYTES');
+      const omittedCandidates = candidates.slice(startIndex);
+      capacityOmittedDocumentCount += omittedCandidates.length;
+      for (const candidate of omittedCandidates) {
+        recordBlockedPolicy(documentAuthority(candidate.relative_path));
+      }
+    };
+
+    for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
+      const candidate = candidates[candidateIndex]!;
+      const classification = documentAuthority(candidate.relative_path);
       const declaredSize = candidate.size_bytes;
       if (typeof declaredSize !== 'number' || !Number.isSafeInteger(declaredSize) || declaredSize < 0) {
         throw new PrimeContextError('IO_ERROR', 'Document discovery returned an invalid file size');
       }
       if (declaredSize > this.limits.maxDocumentBytes) {
+        candidateDocumentCount += 1;
         skippedOversizeCount += 1;
+        recordBlockedPolicy(classification);
         continue;
       }
       const declaredTotal = totalCandidateBytes + declaredSize;
       if (!Number.isSafeInteger(declaredTotal) || declaredTotal > this.limits.maxTotalBytes) {
+        if (truncateAtCapacity) {
+          truncateCandidateSuffix(candidateIndex);
+          break;
+        }
         throw new PrimeContextError(
           'SECURITY_ERROR',
           'Document discovery total byte limit exceeded',
           [`maximum=${this.limits.maxTotalBytes}`],
+        );
+      }
+
+      if (providedWalk) {
+        await assertPhysicalRepositorySourcePathAllowed(
+          resolvedRoot,
+          candidate.relative_path,
+          this.configuredExcludes,
         );
       }
 
       const read = await readStableBoundedBytes(
         resolvedRoot,
         candidate.relative_path,
-        this.limits.maxDocumentBytes,
+        truncateAtCapacity
+          ? Math.min(this.limits.maxDocumentBytes, this.limits.maxTotalBytes - totalCandidateBytes)
+          : this.limits.maxDocumentBytes,
       );
       if (read.kind === 'oversize') {
+        if (truncateAtCapacity
+          && read.observed_size_bytes <= this.limits.maxDocumentBytes
+          && read.observed_size_bytes > this.limits.maxTotalBytes - totalCandidateBytes) {
+          truncateCandidateSuffix(candidateIndex);
+          break;
+        }
+        candidateDocumentCount += 1;
         skippedOversizeCount += 1;
+        recordBlockedPolicy(classification);
         continue;
       }
       const actualTotal = totalCandidateBytes + read.bytes.byteLength;
       if (!Number.isSafeInteger(actualTotal) || actualTotal > this.limits.maxTotalBytes) {
+        if (truncateAtCapacity) {
+          truncateCandidateSuffix(candidateIndex);
+          break;
+        }
         throw new PrimeContextError(
           'SECURITY_ERROR',
           'Document discovery total byte limit exceeded',
           [`maximum=${this.limits.maxTotalBytes}`],
         );
       }
+      candidateDocumentCount += 1;
       totalCandidateBytes = actualTotal;
       const content = decodeUtf8(read.bytes);
       if (content === undefined) {
         skippedBinaryCount += 1;
+        recordBlockedPolicy(classification);
         continue;
       }
       if (containsSensitiveContent(content)) {
         skippedSensitiveContentCount += 1;
+        recordBlockedPolicy(classification);
         continue;
       }
 
-      const classification = documentAuthority(candidate.relative_path);
       sources.push({
         relative_path: candidate.relative_path,
         content,
@@ -652,12 +889,24 @@ export class NodeDocumentSourceAdapter {
       sources,
       discovered_path_count: walk.paths.length,
       excluded_path_count: walk.excluded_path_count + corpusExcludedCount,
-      candidate_document_count: candidates.length,
+      candidate_document_count: candidateDocumentCount,
       omitted_document_count: omittedDocumentCount,
       total_source_bytes: totalSourceBytes,
       skipped_oversize_count: skippedOversizeCount,
       skipped_binary_count: skippedBinaryCount,
       skipped_sensitive_content_count: skippedSensitiveContentCount,
+      blocked_policy_count: blockedPolicyCount,
+      blocked_policy_kinds: blockedPolicyKinds,
+      ...(auditedWalk || truncateAtCapacity ? {
+        discovery_truncated: truncationReasons.size > 0,
+        discovery_truncation_reasons: DOCUMENT_COLLECTION_TRUNCATION_REASON_ORDER
+          .filter((reason) => truncationReasons.has(reason)),
+        ...(auditedWalk ? {
+          discovery_visited_entry_count: auditedWalk.visited_entry_count,
+          discovery_capacity_omitted_entry_count: auditedWalk.capacity_omitted_entry_count,
+        } : {}),
+        ...(truncateAtCapacity ? { capacity_omitted_document_count: capacityOmittedDocumentCount } : {}),
+      } : {}),
     };
   }
 }

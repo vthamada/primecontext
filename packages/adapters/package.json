@@ -1,8 +1,18 @@
 {
   "name": "@primecontext/adapters",
   "version": "0.1.0",
+  "description": "Local filesystem, Git, document, SQLite/FTS, and TypeScript adapter implementations for PrimeContext.",
   "private": true,
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vthamada/primecontext.git",
+    "directory": "packages/adapters"
+  },
+  "homepage": "https://github.com/vthamada/primecontext#readme",
+  "bugs": {"url": "https://github.com/vthamada/primecontext/issues"},
+  "keywords": ["context-engineering", "local-first", "adapters"],
+  "engines": {"node": ">=22.13"},
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": ["dist", "!dist/*.test.*"],

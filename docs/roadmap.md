@@ -119,6 +119,19 @@ vertical implementation and its acceptance evidence are recorded in the
 Benchmark, causality, superiority, licensing, naming, publication, and release
 remain separate gates.
 
+## v0.3 consolidation — authorized compatibility-preserving hardening
+
+The [v0.3 consolidation specification](specification/v0.3-consolidation-specification.md)
+authorizes measured corrections to budget semantics, evidence applicability,
+compact output, state integrity, provenance, optional-adapter cancellation,
+demo assertions, and CI. It is a hardening pass over the implemented v0.3
+vertical slice, not a new product phase. It does not authorize release,
+licensing, npm publication, benchmark claims, or a new integration surface.
+
+Technical release-candidate preparation follows the
+[release process](release-process.md). Human license, naming, disclosure,
+security-contact, publication, and claim decisions remain independent.
+
 ## Later direction, not current scope
 
 The [post-v0.2 evolution specification](specification/post-v0.2-evolution-specification.md) inventories the complete candidate path, dependencies, optional tracks, v1.0 outcome gates, and human decisions. It is a planning baseline and does not authorize production changes.

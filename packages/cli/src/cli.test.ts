@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { platform, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -8,6 +9,7 @@ import test from 'node:test';
 import { validateRepoMap, validateTaskCapsule } from '@primecontext/schemas';
 import {
   handoffValidateCommand,
+  defaultConfig,
   initCommand,
   inspectCommand,
   mapCommand,
@@ -34,12 +36,339 @@ test('init is idempotent and does not overwrite configuration', async () => {
   assert.match(await readFile(join(root, '.gitignore'), 'utf8'), /\.primecontext\//);
 });
 
+test('init publishes and verifies the ignore rule before creating state or its lock', async () => {
+  const root = await repoFixture();
+  const releasePath = join(root, 'release-ignore-publication');
+  const commandsUrl = new URL('./commands.js', import.meta.url).href;
+  const childScript = `
+    import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const originalRename = fs.promises.rename.bind(fs.promises);
+    fs.promises.rename = async (source, target) => {
+      if (String(target).endsWith('.gitignore')) {
+        process.stdout.write('BEFORE_GITIGNORE_RENAME\\n');
+        while (!fs.existsSync(process.argv[2])) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      return originalRename(source, target);
+    };
+    syncBuiltinESMExports();
+    const { initCommand: childInitCommand } = await import(${JSON.stringify(commandsUrl)});
+    await childInitCommand(process.argv[1]);
+  `;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', childScript, root, releasePath], {
+    cwd: root,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk: string) => { stdout += chunk; });
+  child.stderr.on('data', (chunk: string) => { stderr += chunk; });
+  const reachedPublication = new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`init child did not reach publication: ${stderr}`)), 5_000);
+    child.stdout.on('data', () => {
+      if (!stdout.includes('BEFORE_GITIGNORE_RENAME')) return;
+      clearTimeout(timeout);
+      resolve();
+    });
+    child.once('exit', (code, signal) => {
+      if (stdout.includes('BEFORE_GITIGNORE_RENAME')) return;
+      clearTimeout(timeout);
+      reject(new Error(`init child exited before publication: code=${code} signal=${signal} ${stderr}`));
+    });
+  });
+
+  try {
+    await reachedPublication;
+    await assert.rejects(access(join(root, 'primecontext.config.json')), /ENOENT/);
+    await assert.rejects(access(join(root, '.primecontext')), /ENOENT/);
+    await assert.rejects(access(join(root, '.gitignore')), /ENOENT/);
+    const customConfig = { ...defaultConfig(), state_dir: '.custom-primecontext' };
+    const customConfigBytes = `${JSON.stringify(customConfig, null, 2)}\n`;
+    await writeFile(join(root, 'primecontext.config.json'), customConfigBytes);
+    await writeFile(releasePath, 'release');
+    if (child.exitCode === null && child.signalCode === null) await once(child, 'exit');
+    assert.equal(child.exitCode, 0, stderr);
+    assert.equal(await readFile(join(root, 'primecontext.config.json'), 'utf8'), customConfigBytes);
+    await assert.rejects(access(join(root, '.primecontext')), /ENOENT/);
+    await access(join(root, '.custom-primecontext', 'capsules'));
+    await access(join(root, '.custom-primecontext', 'tasks'));
+    assert.match(await readFile(join(root, '.gitignore'), 'utf8'), /^\.custom-primecontext\/$/mu);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill();
+      await once(child, 'exit');
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('init preserves a genuine ignore-publication EPERM when no concurrent writer completed it', async () => {
+  const root = await repoFixture();
+  const commandsUrl = new URL('./commands.js', import.meta.url).href;
+  const childScript = `
+    import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const originalRename = fs.promises.rename.bind(fs.promises);
+    fs.promises.rename = async (source, target) => {
+      if (String(target).endsWith('.gitignore')) {
+        const error = new Error('synthetic isolated ignore publication failure');
+        error.code = 'EPERM';
+        throw error;
+      }
+      return originalRename(source, target);
+    };
+    syncBuiltinESMExports();
+    const { initCommand: childInitCommand } = await import(${JSON.stringify(commandsUrl)});
+    try {
+      await childInitCommand(process.argv[1]);
+      process.stdout.write('RESULT:UNEXPECTED_SUCCESS\\n');
+    } catch (error) {
+      process.stdout.write('RESULT:' + String(error) + '\\n');
+    }
+  `;
+  const child = spawnSync(
+    process.execPath,
+    ['--input-type=module', '-e', childScript, root],
+    { cwd: root, encoding: 'utf8', windowsHide: true },
+  );
+  assert.equal(child.status, 0, child.stderr);
+  assert.match(child.stdout, /RESULT:PrimeContextError: IO_ERROR:/u);
+  assert.doesNotMatch(child.stdout, /active writer/iu);
+  await assert.rejects(access(join(root, 'primecontext.config.json')), /ENOENT/);
+  await assert.rejects(access(join(root, '.primecontext')), /ENOENT/);
+});
+
+test('init never overwrites an external configuration published at its atomic boundary', async () => {
+  const root = await repoFixture();
+  const commandsUrl = new URL('./commands.js', import.meta.url).href;
+  const customConfig = { ...defaultConfig(), state_dir: '.external-primecontext' };
+  const customConfigBytes = `${JSON.stringify(customConfig, null, 2)}\n`;
+  const childScript = `
+    import fs from 'node:fs';
+    import path from 'node:path';
+    import { syncBuiltinESMExports } from 'node:module';
+    const root = process.argv[1];
+    const externalBytes = ${JSON.stringify(customConfigBytes)};
+    let injected = false;
+    const injectExternalConfig = async (target) => {
+      if (injected || !String(target).endsWith('primecontext.config.json')) return;
+      injected = true;
+      await fs.promises.writeFile(target, externalBytes, { flag: 'wx' });
+    };
+    const originalRename = fs.promises.rename.bind(fs.promises);
+    fs.promises.rename = async (source, target) => {
+      await injectExternalConfig(target);
+      return originalRename(source, target);
+    };
+    const originalLink = fs.promises.link.bind(fs.promises);
+    fs.promises.link = async (source, target) => {
+      if (String(target).endsWith('primecontext.config.json')) {
+        const relativeSource = path.relative(root, String(source)).replaceAll('\\\\', '/');
+        if (!relativeSource.startsWith('.primecontext/')) {
+          throw new Error('configuration temporary file escaped ignored state: ' + relativeSource);
+        }
+      }
+      await injectExternalConfig(target);
+      return originalLink(source, target);
+    };
+    syncBuiltinESMExports();
+    const { initCommand: childInitCommand } = await import(${JSON.stringify(commandsUrl)});
+    try {
+      await childInitCommand(root);
+      process.stdout.write('RESULT:UNEXPECTED_SUCCESS\\n');
+    } catch (error) {
+      process.stdout.write('RESULT:' + String(error) + '\\n');
+    }
+  `;
+
+  try {
+    const child = spawnSync(
+      process.execPath,
+      ['--input-type=module', '-e', childScript, root],
+      { cwd: root, encoding: 'utf8', windowsHide: true },
+    );
+    assert.equal(child.status, 0, child.stderr);
+    assert.match(child.stdout, /RESULT:PrimeContextError: STATE_ERROR: Repository configuration changed during initialization; retry/u);
+    assert.equal(await readFile(join(root, 'primecontext.config.json'), 'utf8'), customConfigBytes);
+    await assert.rejects(access(join(root, '.primecontext', 'capsules')), /ENOENT/);
+    await assert.rejects(access(join(root, '.primecontext', 'tasks')), /ENOENT/);
+
+    const retried = await initCommand(root);
+    assert.equal(retried.created_config, false);
+    assert.equal(retried.state_dir, join(root, '.external-primecontext'));
+    assert.equal(await readFile(join(root, 'primecontext.config.json'), 'utf8'), customConfigBytes);
+    await access(join(root, '.external-primecontext', 'capsules'));
+    await access(join(root, '.external-primecontext', 'tasks'));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('init revalidates configuration and ignore after creating state directories', async () => {
+  const root = await repoFixture();
+  const commandsUrl = new URL('./commands.js', import.meta.url).href;
+  const customConfig = { ...defaultConfig(), state_dir: '.late-primecontext' };
+  const customConfigBytes = `${JSON.stringify(customConfig, null, 2)}\n`;
+  const childScript = `
+    import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const root = process.argv[1];
+    const externalBytes = ${JSON.stringify(customConfigBytes)};
+    const originalMkdir = fs.promises.mkdir.bind(fs.promises);
+    let injected = false;
+    fs.promises.mkdir = async (path, options) => {
+      const result = await originalMkdir(path, options);
+      const normalized = String(path).replaceAll('\\\\', '/');
+      if (!injected && normalized.endsWith('/.primecontext/tasks')) {
+        injected = true;
+        await fs.promises.writeFile(root + '/primecontext.config.json', externalBytes);
+      }
+      return result;
+    };
+    syncBuiltinESMExports();
+    const { initCommand: childInitCommand } = await import(${JSON.stringify(commandsUrl)});
+    try {
+      await childInitCommand(root);
+      process.stdout.write('RESULT:UNEXPECTED_SUCCESS\\n');
+    } catch (error) {
+      process.stdout.write('RESULT:' + String(error) + '\\n');
+    }
+  `;
+
+  try {
+    const child = spawnSync(
+      process.execPath,
+      ['--input-type=module', '-e', childScript, root],
+      { cwd: root, encoding: 'utf8', windowsHide: true },
+    );
+    assert.equal(child.status, 0, child.stderr);
+    assert.match(child.stdout, /RESULT:PrimeContextError: STATE_ERROR: Repository configuration changed during initialization; retry/u);
+    assert.equal(await readFile(join(root, 'primecontext.config.json'), 'utf8'), customConfigBytes);
+
+    const retried = await initCommand(root);
+    assert.equal(retried.created_config, false);
+    assert.equal(retried.state_dir, join(root, '.late-primecontext'));
+    await access(join(root, '.late-primecontext', 'capsules'));
+    await access(join(root, '.late-primecontext', 'tasks'));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('concurrent init attempts leave one ignore rule and retryable initialized state', async () => {
+  const root = await repoFixture();
+  const attempts = await Promise.allSettled([initCommand(root), initCommand(root)]);
+  assert.ok(attempts.some((result) => result.status === 'fulfilled'));
+  for (const result of attempts) {
+    if (result.status === 'rejected') assert.match(String(result.reason), /active writer/i);
+  }
+  await initCommand(root);
+  const ignoreLines = (await readFile(join(root, '.gitignore'), 'utf8')).split(/\r?\n/u);
+  assert.equal(ignoreLines.filter((line) => line === '.primecontext/').length, 1);
+  await access(join(root, '.primecontext', 'capsules'));
+  await access(join(root, '.primecontext', 'tasks'));
+});
+
+test('cross-process init serializes configuration publication behind the state writer lock', async () => {
+  const root = await repoFixture();
+  const releasePath = join(root, 'release-config-publication');
+  const commandsUrl = new URL('./commands.js', import.meta.url).href;
+  const childScript = `
+    import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const root = process.argv[1];
+    const releasePath = process.argv[2];
+    const worker = process.argv[3];
+    const originalLink = fs.promises.link.bind(fs.promises);
+    fs.promises.link = async (source, target) => {
+      if (String(target).endsWith('primecontext.config.json')) {
+        process.stdout.write('CONFIG_PUBLISH_READY:' + worker + '\\n');
+        while (!fs.existsSync(releasePath)) await new Promise((resolve) => setTimeout(resolve, 10));
+        if (worker === 'second') {
+          const error = new Error('synthetic concurrent configuration publication');
+          error.code = 'EPERM';
+          throw error;
+        }
+      }
+      return originalLink(source, target);
+    };
+    syncBuiltinESMExports();
+    const { initCommand: childInitCommand } = await import(${JSON.stringify(commandsUrl)});
+    try {
+      await childInitCommand(root);
+      process.stdout.write('RESULT:OK\\n');
+    } catch (error) {
+      process.stdout.write('RESULT:ERROR:' + String(error) + '\\n');
+    }
+  `;
+  const startWorker = (worker: string) => {
+    const child = spawn(process.execPath, [
+      '--input-type=module', '-e', childScript, root, releasePath, worker,
+    ], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.on('data', (chunk: string) => { stderr += chunk; });
+    return { child, stdout: () => stdout, stderr: () => stderr };
+  };
+  const waitForOutput = (
+    worker: ReturnType<typeof startWorker>,
+    pattern: RegExp,
+  ): Promise<void> => new Promise((resolve, reject) => {
+    const check = () => {
+      if (!pattern.test(worker.stdout())) return;
+      clearTimeout(timeout);
+      worker.child.stdout.off('data', check);
+      resolve();
+    };
+    const timeout = setTimeout(() => {
+      worker.child.stdout.off('data', check);
+      reject(new Error(`init worker did not reach ${pattern}: ${worker.stdout()} ${worker.stderr()}`));
+    }, 5_000);
+    worker.child.stdout.on('data', check);
+    check();
+  });
+  const waitForExit = async (worker: ReturnType<typeof startWorker>): Promise<void> => {
+    if (worker.child.exitCode === null && worker.child.signalCode === null) await once(worker.child, 'exit');
+  };
+
+  const first = startWorker('first');
+  let second: ReturnType<typeof startWorker> | undefined;
+  try {
+    await waitForOutput(first, /CONFIG_PUBLISH_READY:first/u);
+    second = startWorker('second');
+    await waitForOutput(second, /CONFIG_PUBLISH_READY:second|RESULT:/u);
+    await writeFile(releasePath, 'release');
+    await Promise.all([waitForExit(first), waitForExit(second)]);
+    const results = [first.stdout(), second.stdout()];
+    assert.ok(results.some((output) => output.includes('RESULT:OK')), JSON.stringify(results));
+    for (const output of results) {
+      const error = output.match(/RESULT:ERROR:(.*)/u)?.[1];
+      if (error !== undefined) assert.match(error, /active writer/i);
+    }
+  } finally {
+    for (const worker of [first, second]) {
+      if (worker && worker.child.exitCode === null && worker.child.signalCode === null) worker.child.kill();
+    }
+    await Promise.all([first, second].filter((worker) => worker !== undefined).map(async (worker) => {
+      if (worker.child.exitCode === null && worker.child.signalCode === null) await once(worker.child, 'exit');
+    }));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('map writes a schema-valid semantic repo map', async () => {
   const root = await repoFixture();
   await initCommand(root);
   const result = await mapCommand(root);
   const map = JSON.parse(await readFile(result.map_path, 'utf8')) as unknown;
   assert.equal(validateRepoMap(map).valid, true);
+  assert.equal(JSON.stringify(map).includes('.primecontext'), false);
 });
 
 test('task generates a valid capsule using configured budget defaults', async () => {
@@ -78,6 +407,32 @@ test('metrics returns an empty evidence summary when no records exist', async ()
   const summary = await metricsCommand(root);
   assert.equal(summary.record_count, 0);
   assert.deepEqual(summary.totals, {});
+});
+
+test('every v0.1 state command rejects a state directory that is no longer ignored', async () => {
+  const root = await repoFixture();
+  await initCommand(root);
+  await writeFile(join(root, '.gitignore'), '');
+  const taskFile = join(root, 'ignored-state-task.json');
+  await writeFile(taskFile, JSON.stringify({
+    task_id: 'IGNORED-STATE-001', goal: 'require ignored state', task_type: 'small_code_fix',
+    boundaries: { allowed_paths: ['src'], forbidden_paths: [] }, acceptance: ['State remains private'],
+  }));
+  const metricFile = join(root, 'ignored-state-metric.json');
+  await writeFile(metricFile, JSON.stringify({
+    schema_version: '0.1', task_id: 'IGNORED-STATE-001', recorded_at: '2026-08-14T12:00:00.000Z',
+    input_tokens: 1,
+  }));
+
+  for (const operation of [
+    () => mapCommand(root),
+    () => taskCommand(root, 'IGNORED-STATE-001', taskFile),
+    () => inspectCommand(root, 'IGNORED-STATE-001'),
+    () => metricsCommand(root),
+    () => recordMetricCommand(root, metricFile),
+  ]) {
+    await assert.rejects(operation, /state_dir must be ignored/i);
+  }
 });
 
 test('task and inspect reject traversal task ids before any outside read or write', async () => {
@@ -222,12 +577,15 @@ test('metrics distinguishes missing evidence from I/O errors and can record vali
   const metricFile = join(secondRoot, 'metric.json');
   await writeFile(metricFile, JSON.stringify({
     schema_version: '0.1', task_id: 'BENCH-001', recorded_at: '2026-08-11T12:00:00.000Z',
-    arm: 'A', input_tokens: 100, test_status: 'PASS', review_status: 'PASS',
+    arm: 'A', input_tokens: 100, agent_output_tokens: 40,
+    estimated_fields: ['agent_output_tokens'], test_status: 'PASS', review_status: 'PASS',
   }));
   await recordMetricCommand(secondRoot, metricFile);
   const summary = await metricsCommand(secondRoot);
   assert.equal(summary.record_count, 1);
   assert.equal(summary.totals.input_tokens, 100);
+  assert.equal(summary.totals.agent_output_tokens, 40);
+  assert.deepEqual(summary.estimated_fields, ['agent_output_tokens']);
 });
 
 test('metrics rejects aggregate totals that exceed the safe integer range', async () => {

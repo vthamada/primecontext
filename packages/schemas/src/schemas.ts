@@ -15,6 +15,7 @@ export const metricNumericFields = [
   'input_tokens',
   'cached_input_tokens',
   'output_tokens',
+  'agent_output_tokens',
   'tool_calls',
   'file_reads',
   'codegraph_calls',
@@ -29,6 +30,11 @@ const taskIdString = { ...nonEmptyString, maxLength: 128, pattern: taskIdPattern
 const stringArray = { type: 'array', items: nonEmptyString } as const;
 const nonNegativeInteger = { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER } as const;
 const positiveInteger = { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER } as const;
+const sha256 = { type: 'string', pattern: '^sha256:[0-9a-f]{64}$' } as const;
+const boundedRunText = {
+  type: 'string', minLength: 1, maxLength: 1024,
+  pattern: '^[^\\u0000-\\u001f\\u007f-\\u009f]+$',
+} as const;
 
 const contextBudgetContract = {
   type: 'object',
@@ -161,6 +167,7 @@ export const metricRecordSchema = {
     schema_version: { const: '0.1' }, task_id: taskIdString, recorded_at: nonEmptyString,
     arm: { enum: ['A', 'B'] },
     input_tokens: nonNegativeInteger, cached_input_tokens: nonNegativeInteger, output_tokens: nonNegativeInteger,
+    agent_output_tokens: nonNegativeInteger,
     tool_calls: nonNegativeInteger, file_reads: nonNegativeInteger, codegraph_calls: nonNegativeInteger,
     context_expansions: nonNegativeInteger, duration_ms: nonNegativeInteger, selected_context_tokens: nonNegativeInteger,
     test_status: { enum: ['PASS', 'FAIL', 'UNKNOWN'] }, review_status: { enum: ['PASS', 'FAIL', 'UNKNOWN'] },
@@ -168,6 +175,20 @@ export const metricRecordSchema = {
     estimated_fields: {
       type: 'array', uniqueItems: true, items: { enum: metricNumericFields },
       $comment: 'Each estimated field must also be present as a measurement; enforced by the runtime validator.',
+    },
+    run_environment: {
+      type: 'object', additionalProperties: false,
+      required: [
+        'commit', 'worktree_digest', 'agent', 'model', 'reasoning_effort', 'permissions', 'runtime',
+        'lockfile_hash', 'time_limit_ms', 'test_command', 'rubric',
+      ],
+      properties: {
+        commit: { ...boundedRunText, maxLength: 128 }, worktree_digest: sha256,
+        agent: boundedRunText, model: boundedRunText, reasoning_effort: boundedRunText,
+        permissions: boundedRunText, runtime: boundedRunText, lockfile_hash: sha256,
+        time_limit_ms: positiveInteger,
+        test_command: { ...boundedRunText, maxLength: 4096 }, rubric: boundedRunText,
+      },
     },
   },
 } as const;

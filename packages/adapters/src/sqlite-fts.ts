@@ -1,10 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { constants, type Stats } from 'node:fs';
 import { lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
+import { hostname } from 'node:os';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { PrimeContextError } from '@primecontext/core';
 import { assertNoSymbolicLinkComponents } from './filesystem.js';
 import { isSensitiveDocumentContent } from './documents.js';
+import { resolvePhysicalRepositoryRelativePath } from './physical-path.js';
 import { assertPathInsideRoot, isSensitivePath } from './security.js';
+import { sameRegularFileSnapshot } from './file-snapshot.js';
 import {
   createCooperativeDeadlineV03,
   systemMonotonicNowV03,
@@ -18,6 +22,7 @@ export const DEFAULT_SQLITE_FTS_LIMITS_V03 = Object.freeze({
   maxSourceBytes: 1024 * 1024,
   maxTotalBytes: 256 * 1024 * 1024,
 });
+export const DEFAULT_SQLITE_FTS_STATE_DIR_V03 = '.primecontext';
 const MAX_SOURCES = DEFAULT_SQLITE_FTS_LIMITS_V03.maxSources;
 const MAX_SOURCE_BYTES = DEFAULT_SQLITE_FTS_LIMITS_V03.maxSourceBytes;
 const MAX_TOTAL_BYTES = DEFAULT_SQLITE_FTS_LIMITS_V03.maxTotalBytes;
@@ -28,6 +33,12 @@ const MAX_EXCERPT_CHARACTERS = 1_200;
 const MAX_INDEX_BYTES = 512 * 1024 * 1024;
 const OPTIONAL_ADAPTER_DEADLINE_MS = 30_000;
 const DB_SCHEMA_VERSION = 3;
+const ENTRIES_FTS_SCHEMA_DDL = `CREATE VIRTUAL TABLE entries_fts USING fts5(
+          source_id UNINDEXED, path UNINDEXED, title, content,
+          tokenize='unicode61 remove_diacritics 0'
+        )`;
+const MAX_FTS_WRITER_LOCK_BYTES = 4_096;
+const MAX_FTS_LOCK_HOSTNAME_CHARACTERS = 255;
 
 type NodeSqliteModule = typeof import('node:sqlite');
 type DatabaseSyncConstructor = NodeSqliteModule['DatabaseSync'];
@@ -66,6 +77,7 @@ export interface HybridIndexMetadataV03 {
 
 export interface SqliteFtsRebuildResultV03 {
   schema_version: '0.3';
+  toolchain: SqliteFtsToolchainV03;
   index_path: string;
   index_digest: string;
   worktree_digest: string;
@@ -77,6 +89,19 @@ export interface SqliteFtsRebuildResultV03 {
 export interface SqliteFtsSearchOptionsV03 {
   limit?: number;
   expected_worktree_digest: string;
+  state_dir?: string;
+  signal?: AbortSignal;
+}
+
+export interface SqliteFtsRebuildOptionsV03 {
+  state_dir?: string;
+  signal?: AbortSignal;
+}
+
+export interface SqliteFtsToolchainV03 {
+  sqlite_version: string;
+  fts5_available: true;
+  fts5_source_id?: string;
 }
 
 export interface SqliteFtsHitV03 {
@@ -95,6 +120,7 @@ export interface SqliteFtsHitV03 {
 
 export interface SqliteFtsSearchResultV03 {
   schema_version: '0.3';
+  toolchain: SqliteFtsToolchainV03;
   hits: SqliteFtsHitV03[];
   index_digest: string;
   worktree_digest: string;
@@ -126,6 +152,22 @@ interface IndexRow {
 }
 
 const activeWriters = new Set<string>();
+const pendingWriters = new Set<string>();
+
+interface FtsWriterLockRecord {
+  schema_version: 'primecontext-lock-v1';
+  pid: number;
+  hostname: string;
+  created_at: string;
+  operation: 'sqlite-fts-rebuild';
+  owner_token: string;
+}
+
+function nodeErrorCode(error: unknown): string | undefined {
+  return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : undefined;
+}
 
 function resolveRuntime(runtime: SqliteFtsRuntimeV03): Required<SqliteFtsRuntimeV03> {
   if (typeof runtime !== 'object' || runtime === null || Array.isArray(runtime)) {
@@ -152,6 +194,24 @@ function byteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
 
+function cooperativeOperationCheck(
+  assertWithinDeadline: () => void,
+  signal: AbortSignal | undefined,
+  label: string,
+): () => void {
+  if (signal !== undefined && (
+    typeof signal !== 'object'
+    || typeof signal.aborted !== 'boolean'
+    || typeof signal.addEventListener !== 'function'
+  )) {
+    throw new PrimeContextError('CONFIG_ERROR', `${label} cancellation signal is invalid`);
+  }
+  return () => {
+    if (signal?.aborted) throw new PrimeContextError('CAPABILITY_ERROR', `${label} was cancelled cooperatively`);
+    assertWithinDeadline();
+  };
+}
+
 function validateHash(value: unknown, label: string): asserts value is string {
   if (typeof value !== 'string' || !HASH_PATTERN.test(value)) {
     throw new PrimeContextError('VALIDATION_ERROR', `${label} must be a lowercase SHA-256 digest`);
@@ -173,20 +233,84 @@ function validatePortableChildPath(value: unknown, label: string): asserts value
   }
 }
 
-function validateIndexPath(value: unknown): asserts value is string {
+function validateStateDirectory(value: unknown): asserts value is string {
+  validatePortableChildPath(value, 'FTS state directory');
+  if (value !== DEFAULT_SQLITE_FTS_STATE_DIR_V03 && isSensitivePath(value)) {
+    throw new PrimeContextError('SECURITY_ERROR', 'Sensitive FTS state directory is blocked');
+  }
+}
+
+function validateIndexPath(value: unknown, stateDirectory: string): asserts value is string {
+  validateStateDirectory(stateDirectory);
   validatePortableChildPath(value, 'FTS index path');
   if (!value.toLowerCase().endsWith('.sqlite')) {
     throw new PrimeContextError('VALIDATION_ERROR', 'FTS index path must end in .sqlite');
   }
-  const segments = value.split('/');
-  const isPrimeContextState = segments[0]?.toLowerCase() === '.primecontext';
-  const sensitiveOutsideState = !isPrimeContextState && isSensitivePath(value);
-  const sensitiveInsideState = isPrimeContextState
-    && segments.length > 1
-    && isSensitivePath(segments.slice(1).join('/'));
-  if (sensitiveOutsideState || sensitiveInsideState) {
+  const indexSegments = value.split('/');
+  const stateSegments = stateDirectory.split('/');
+  if (indexSegments.length <= stateSegments.length
+    || stateSegments.some((segment, index) => indexSegments[index] !== segment)) {
+    if (isSensitivePath(value)) {
+      throw new PrimeContextError('SECURITY_ERROR', 'Sensitive FTS index path is blocked');
+    }
+    throw new PrimeContextError(
+      'SECURITY_ERROR',
+      'FTS index path must be strictly inside the configured state directory',
+    );
+  }
+  const stateRelativeIndexPath = indexSegments.slice(stateSegments.length).join('/');
+  if (isSensitivePath(stateRelativeIndexPath)) {
     throw new PrimeContextError('SECURITY_ERROR', 'Sensitive FTS index path is blocked');
   }
+}
+
+function isDefaultStateDirectory(value: string): boolean {
+  return process.platform === 'win32'
+    ? value.toLowerCase() === DEFAULT_SQLITE_FTS_STATE_DIR_V03.toLowerCase()
+    : value === DEFAULT_SQLITE_FTS_STATE_DIR_V03;
+}
+
+function validatePhysicalIndexPath(value: string, stateDirectory: string): void {
+  validatePortableChildPath(stateDirectory, 'Physical FTS state directory');
+  validatePortableChildPath(value, 'Physical FTS index path');
+  if (!value.toLowerCase().endsWith('.sqlite')) {
+    throw new PrimeContextError('VALIDATION_ERROR', 'FTS index path must end in .sqlite');
+  }
+  if (!isDefaultStateDirectory(stateDirectory) && isSensitivePath(stateDirectory)) {
+    throw new PrimeContextError('SECURITY_ERROR', 'Sensitive FTS state directory is blocked');
+  }
+  const indexSegments = value.split('/');
+  const stateSegments = stateDirectory.split('/');
+  if (indexSegments.length <= stateSegments.length
+    || stateSegments.some((segment, index) => indexSegments[index] !== segment)) {
+    throw new PrimeContextError(
+      'SECURITY_ERROR',
+      'FTS index path must be strictly inside the configured state directory',
+    );
+  }
+  if (isSensitivePath(indexSegments.slice(stateSegments.length).join('/'))) {
+    throw new PrimeContextError('SECURITY_ERROR', 'Sensitive FTS index path is blocked');
+  }
+}
+
+async function assertPhysicalIndexPathSafe(
+  root: string,
+  relativeDbPath: string,
+  stateDirectory: string,
+  allowMissing: boolean,
+): Promise<void> {
+  if (process.platform !== 'win32') return;
+  const physicalStateDirectory = await resolvePhysicalRepositoryRelativePath(
+    root,
+    stateDirectory,
+    { allowMissing },
+  );
+  const physicalIndexPath = await resolvePhysicalRepositoryRelativePath(
+    root,
+    relativeDbPath,
+    { allowMissing },
+  );
+  validatePhysicalIndexPath(physicalIndexPath, physicalStateDirectory);
 }
 
 function writerLockKey(absolutePath: string): string {
@@ -263,12 +387,14 @@ function normalizeSource(value: HybridIndexSourceV03): NormalizedSource {
 function canonicalIndexDigest(
   repositoryId: string,
   worktreeDigest: string,
+  toolchain: SqliteFtsToolchainV03,
   rows: readonly IndexRow[],
 ): string {
   return sha256(JSON.stringify({
     schema_version: '0.3',
     repository_id: repositoryId,
     worktree_digest: worktreeDigest,
+    toolchain,
     sources: rows.map((row) => ({
       path: row.path,
       source_id: row.source_id,
@@ -338,23 +464,16 @@ function sanitizeExcerpt(value: string): { text: string; truncated: boolean } {
 }
 
 async function loadDatabaseSync(): Promise<DatabaseSyncConstructor> {
+  const [nodeMajor, nodeMinor] = process.versions.node.split('.').map((part) => Number.parseInt(part, 10));
+  const warningFreeReleaseCandidate = Number.isSafeInteger(nodeMajor) && Number.isSafeInteger(nodeMinor)
+    && (nodeMajor! >= 26 || nodeMajor === 25 && nodeMinor! >= 7 || nodeMajor === 24 && nodeMinor! >= 15);
+  if (!warningFreeReleaseCandidate) {
+    // Earlier node:sqlite builds emit an unavoidable process-global ExperimentalWarning.
+    // The optional adapter stays unavailable there so JSON-process stderr remains uncontaminated.
+    throw new PrimeContextError('CAPABILITY_ERROR', 'SQLite/FTS capability is unavailable');
+  }
   try {
-    const originalEmitWarning = process.emitWarning;
-    const filteredEmitWarning = ((warning: string | Error, ...args: unknown[]): void => {
-      const warningText = warning instanceof Error ? warning.message : warning;
-      if (
-        warningText === 'SQLite is an experimental feature and might change at any time'
-        && args[0] === 'ExperimentalWarning'
-      ) return;
-      Reflect.apply(originalEmitWarning, process, [warning, ...args]);
-    }) as typeof process.emitWarning;
-    process.emitWarning = filteredEmitWarning;
-    let sqlite: NodeSqliteModule;
-    try {
-      sqlite = await import('node:sqlite');
-    } finally {
-      if (process.emitWarning === filteredEmitWarning) process.emitWarning = originalEmitWarning;
-    }
+    const sqlite = await import('node:sqlite');
     if (typeof sqlite.DatabaseSync !== 'function') {
       throw new Error('DatabaseSync export is unavailable');
     }
@@ -383,23 +502,95 @@ function configureConnection(database: DatabaseSync, readOnly: boolean): void {
   else database.exec('PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON;');
 }
 
+function boundedToolchainText(value: unknown, maximum: number): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && [...value].length <= maximum
+    && !/[\u0000-\u001f\u007f-\u009f]/u.test(value);
+}
+
+function inspectSqliteToolchain(database: DatabaseSync): SqliteFtsToolchainV03 {
+  const versionRow = database.prepare('SELECT sqlite_version() AS sqlite_version').get();
+  if (!versionRow || !boundedToolchainText(versionRow.sqlite_version, 64)) {
+    throw new PrimeContextError('CAPABILITY_ERROR', 'SQLite runtime version is unavailable');
+  }
+  let fts5SourceId: string | undefined;
+  try {
+    const sourceRow = database.prepare('SELECT fts5_source_id() AS fts5_source_id').get();
+    if (sourceRow?.fts5_source_id !== undefined) {
+      if (!boundedToolchainText(sourceRow.fts5_source_id, 512)) {
+        throw new PrimeContextError('CAPABILITY_ERROR', 'FTS5 runtime identity is invalid');
+      }
+      fts5SourceId = sourceRow.fts5_source_id;
+    }
+  } catch (error) {
+    if (error instanceof PrimeContextError) throw error;
+    // Some supported SQLite builds expose FTS5 without the optional source-id function.
+  }
+  return {
+    sqlite_version: versionRow.sqlite_version,
+    fts5_available: true,
+    ...(fts5SourceId ? { fts5_source_id: fts5SourceId } : {}),
+  };
+}
+
+function storedSqliteToolchain(stored: Readonly<Record<string, string>>): SqliteFtsToolchainV03 {
+  if (!boundedToolchainText(stored.sqlite_version, 64) || stored.fts5_available !== '1'
+    || (stored.fts5_source_id !== undefined && !boundedToolchainText(stored.fts5_source_id, 512))) {
+    throw new PrimeContextError('CATALOG_ERROR', 'Stored SQLite/FTS toolchain identity is malformed');
+  }
+  return {
+    sqlite_version: stored.sqlite_version,
+    fts5_available: true,
+    ...(stored.fts5_source_id ? { fts5_source_id: stored.fts5_source_id } : {}),
+  };
+}
+
+function sameSqliteToolchain(left: SqliteFtsToolchainV03, right: SqliteFtsToolchainV03): boolean {
+  return left.sqlite_version === right.sqlite_version
+    && left.fts5_available === right.fts5_available
+    && left.fts5_source_id === right.fts5_source_id;
+}
+
 function metadata(database: DatabaseSync): Record<string, string> {
-  const allowedKeys = new Set([
+  const requiredKeys = new Set([
     'schema_version', 'repository_id', 'worktree_digest', 'index_digest',
-    'indexed_source_count', 'secure_delete', 'fts_secure_delete',
+    'indexed_source_count', 'secure_delete', 'fts_secure_delete', 'sqlite_version', 'fts5_available',
   ]);
-  const rows = database.prepare('SELECT key, value FROM metadata ORDER BY key LIMIT 8').all();
-  if (rows.length !== allowedKeys.size) {
+  const allowedKeys = new Set([...requiredKeys, 'fts5_source_id']);
+  const rows = database.prepare(`SELECT key, value FROM metadata ORDER BY key LIMIT ${allowedKeys.size + 1}`).all();
+  if (rows.length < requiredKeys.size || rows.length > allowedKeys.size) {
     throw new PrimeContextError('CATALOG_ERROR', 'FTS metadata is incomplete or contains extra fields');
   }
   const result: Record<string, string> = {};
   for (const row of rows) {
-    if (typeof row.key !== 'string' || typeof row.value !== 'string' || !allowedKeys.has(row.key)) {
+    if (typeof row.key !== 'string' || typeof row.value !== 'string' || !allowedKeys.has(row.key)
+      || [...row.value].length > 512 || /[\u0000-\u001f\u007f-\u009f]/u.test(row.value)) {
       throw new PrimeContextError('CATALOG_ERROR', 'FTS metadata is malformed');
     }
     result[row.key] = row.value;
   }
+  if ([...requiredKeys].some((key) => !Object.hasOwn(result, key))) {
+    throw new PrimeContextError('CATALOG_ERROR', 'FTS metadata is incomplete or contains extra fields');
+  }
   return result;
+}
+
+function assertExpectedFtsSchema(database: DatabaseSync, assertWithinDeadline: () => void): void {
+  assertWithinDeadline();
+  const rows = database.prepare(`
+    SELECT type, name, tbl_name, sql
+    FROM sqlite_schema
+    WHERE name = ?
+    ORDER BY type COLLATE BINARY, name COLLATE BINARY
+    LIMIT 2
+  `).all('entries_fts');
+  assertWithinDeadline();
+  const row = rows[0];
+  if (rows.length !== 1 || !row || row.type !== 'table' || row.name !== 'entries_fts'
+    || row.tbl_name !== 'entries_fts' || row.sql !== ENTRIES_FTS_SCHEMA_DDL) {
+    throw new PrimeContextError('CATALOG_ERROR', 'FTS index schema or tokenizer identity is invalid');
+  }
 }
 
 function rowsFromDatabase(database: DatabaseSync, assertWithinDeadline: () => void): IndexRow[] {
@@ -504,15 +695,229 @@ function assertFtsContentMatchesSources(database: DatabaseSync, assertWithinDead
   }
 }
 
-async function ensureSafeIndexParent(root: string, relativePath: string): Promise<void> {
-  const parent = dirname(relativePath).replaceAll('\\', '/');
-  if (parent === '.') return;
-  await assertNoSymbolicLinkComponents(root, parent, { allowMissing: true });
-  const absoluteParent = assertPathInsideRoot(root, parent);
-  await mkdir(absoluteParent, { recursive: true });
-  await assertNoSymbolicLinkComponents(root, parent);
-  const stat = await lstat(absoluteParent);
+async function ensureSafeStateDirectory(root: string, relativeDirectory: string): Promise<void> {
+  await assertNoSymbolicLinkComponents(root, relativeDirectory, { allowMissing: true });
+  const absoluteDirectory = assertPathInsideRoot(root, relativeDirectory);
+  try {
+    await mkdir(absoluteDirectory, { mode: 0o700 });
+  } catch (error) {
+    if (nodeErrorCode(error) !== 'EEXIST') throw error;
+  }
+  await assertNoSymbolicLinkComponents(root, relativeDirectory);
+  const stat = await lstat(absoluteDirectory);
   if (!stat.isDirectory()) throw new PrimeContextError('IO_ERROR', 'FTS index parent is not a directory');
+  if (process.platform !== 'win32') {
+    const directoryHandle = await open(
+      absoluteDirectory,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      const handleStat = await directoryHandle.stat();
+      if (!handleStat.isDirectory()) {
+        throw new PrimeContextError('SECURITY_ERROR', 'FTS index parent changed before permission hardening');
+      }
+      await directoryHandle.chmod(0o700);
+    } finally {
+      await directoryHandle.close();
+    }
+    await assertNoSymbolicLinkComponents(root, relativeDirectory);
+  }
+}
+
+async function ensureSafeIndexParent(
+  root: string,
+  stateDirectory: string,
+  relativePath: string,
+): Promise<void> {
+  validateIndexPath(relativePath, stateDirectory);
+  const parent = dirname(relativePath).replaceAll('\\', '/');
+  const stateSegments = stateDirectory.split('/');
+  const parentSegments = parent.split('/');
+  for (let depth = stateSegments.length; depth <= parentSegments.length; depth += 1) {
+    await ensureSafeStateDirectory(root, parentSegments.slice(0, depth).join('/'));
+  }
+}
+
+function localFtsLockHostname(): string {
+  const value = hostname();
+  if (!boundedToolchainText(value, MAX_FTS_LOCK_HOSTNAME_CHARACTERS)) {
+    throw new PrimeContextError('STATE_ERROR', 'Local hostname is unavailable for safe FTS lock ownership');
+  }
+  return value;
+}
+
+function createFtsWriterLockRecord(): FtsWriterLockRecord {
+  return {
+    schema_version: 'primecontext-lock-v1',
+    pid: process.pid,
+    hostname: localFtsLockHostname(),
+    created_at: new Date().toISOString(),
+    operation: 'sqlite-fts-rebuild',
+    owner_token: randomUUID(),
+  };
+}
+
+function serializeFtsWriterLock(record: FtsWriterLockRecord): string {
+  const serialized = `${JSON.stringify(record)}\n`;
+  if (Buffer.byteLength(serialized, 'utf8') > MAX_FTS_WRITER_LOCK_BYTES) {
+    throw new PrimeContextError('STATE_ERROR', 'FTS writer lock metadata exceeds its byte limit');
+  }
+  return serialized;
+}
+
+function parseFtsWriterLock(content: string): FtsWriterLockRecord {
+  let value: unknown;
+  try {
+    value = JSON.parse(content) as unknown;
+  } catch {
+    throw new PrimeContextError('STATE_ERROR', 'FTS index already has an active writer or malformed lock');
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new PrimeContextError('STATE_ERROR', 'FTS index already has an active writer or malformed lock');
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).sort().join(',') !== 'created_at,hostname,operation,owner_token,pid,schema_version'
+    || record.schema_version !== 'primecontext-lock-v1'
+    || !Number.isSafeInteger(record.pid) || (record.pid as number) < 1 || (record.pid as number) > 2_147_483_647
+    || !boundedToolchainText(record.hostname, MAX_FTS_LOCK_HOSTNAME_CHARACTERS)
+    || record.operation !== 'sqlite-fts-rebuild'
+    || typeof record.owner_token !== 'string'
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(record.owner_token)
+    || typeof record.created_at !== 'string' || record.created_at.length > 64
+    || !Number.isFinite(Date.parse(record.created_at))
+    || new Date(record.created_at).toISOString() !== record.created_at) {
+    throw new PrimeContextError('STATE_ERROR', 'FTS index already has an active writer or unverifiable lock');
+  }
+  return record as unknown as FtsWriterLockRecord;
+}
+
+function ftsWriterProcessLiveness(pid: number): 'ALIVE' | 'DEAD' | 'UNVERIFIABLE' {
+  try {
+    process.kill(pid, 0);
+    return 'ALIVE';
+  } catch (error) {
+    return nodeErrorCode(error) === 'ESRCH' ? 'DEAD' : 'UNVERIFIABLE';
+  }
+}
+
+async function readFtsWriterLock(
+  root: string,
+  relativePath: string,
+  absolutePath: string,
+): Promise<string | undefined> {
+  await assertNoSymbolicLinkComponents(root, relativePath, { allowMissing: true });
+  let pathBefore: Stats;
+  try {
+    pathBefore = await lstat(absolutePath);
+  } catch (error) {
+    if (nodeErrorCode(error) === 'ENOENT') return undefined;
+    throw error;
+  }
+  if (!pathBefore.isFile() || pathBefore.isSymbolicLink() || pathBefore.size > MAX_FTS_WRITER_LOCK_BYTES) {
+    throw new PrimeContextError('STATE_ERROR', 'FTS index already has an active writer or unverifiable lock');
+  }
+  const handle = await open(absolutePath, 'r');
+  try {
+    const handleBefore = await handle.stat();
+    if (!sameRegularFileSnapshot(pathBefore, handleBefore)) {
+      throw new PrimeContextError('STATE_ERROR', 'FTS index already has an active writer or unverifiable lock');
+    }
+    const buffer = Buffer.alloc(Math.min(MAX_FTS_WRITER_LOCK_BYTES + 1, handleBefore.size + 1));
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    const handleAfter = await handle.stat();
+    const pathAfter = await lstat(absolutePath);
+    await assertNoSymbolicLinkComponents(root, relativePath);
+    if (!sameRegularFileSnapshot(handleBefore, handleAfter)
+      || !sameRegularFileSnapshot(handleAfter, pathAfter)
+      || offset !== handleAfter.size
+      || offset > MAX_FTS_WRITER_LOCK_BYTES) {
+      throw new PrimeContextError('STATE_ERROR', 'FTS index already has an active writer or unverifiable lock');
+    }
+    try {
+      return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buffer.subarray(0, offset));
+    } catch {
+      throw new PrimeContextError('STATE_ERROR', 'FTS index already has an active writer or malformed lock');
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+async function createFtsWriterLock(
+  absolutePath: string,
+  record: FtsWriterLockRecord,
+): Promise<Awaited<ReturnType<typeof open>>> {
+  const handle = await open(absolutePath, 'wx', 0o600);
+  try {
+    if (process.platform !== 'win32') await handle.chmod(0o600);
+    await handle.writeFile(serializeFtsWriterLock(record), { encoding: 'utf8' });
+    await handle.sync();
+    return handle;
+  } catch (error) {
+    try { await handle.close(); } catch { /* preserve the lock population failure */ }
+    throw error;
+  }
+}
+
+async function acquireFtsWriterLock(
+  root: string,
+  relativePath: string,
+  absolutePath: string,
+  record: FtsWriterLockRecord,
+): Promise<Awaited<ReturnType<typeof open>>> {
+  try {
+    return await createFtsWriterLock(absolutePath, record);
+  } catch (error) {
+    if (nodeErrorCode(error) !== 'EEXIST') throw error;
+  }
+  const existing = await readFtsWriterLock(root, relativePath, absolutePath);
+  if (existing !== undefined) {
+    const existingRecord = parseFtsWriterLock(existing);
+    if (existingRecord.hostname !== record.hostname) {
+      throw new PrimeContextError('STATE_ERROR', 'FTS writer lock owner cannot be verified on this host');
+    }
+    const liveness = ftsWriterProcessLiveness(existingRecord.pid);
+    if (liveness === 'DEAD') {
+      // Node has no portable atomic compare-and-remove primitive for lock files.
+      // Reclaiming after a liveness check can move a newer writer's lock, so an
+      // orphan remains blocking until an operator removes the verified path.
+      throw new PrimeContextError(
+        'STATE_ERROR',
+        'FTS writer lock belongs to a dead process and requires manual removal',
+      );
+    }
+    throw new PrimeContextError(
+      'STATE_ERROR',
+      liveness === 'ALIVE'
+        ? 'FTS index already has an active writer'
+        : 'FTS writer lock owner cannot be verified',
+    );
+  }
+  try {
+    return await createFtsWriterLock(absolutePath, record);
+  } catch (error) {
+    if (nodeErrorCode(error) === 'EEXIST') {
+      throw new PrimeContextError('STATE_ERROR', 'FTS index already has an active writer');
+    }
+    throw error;
+  }
+}
+
+async function releaseOwnedFtsWriterLock(
+  root: string,
+  relativePath: string,
+  absolutePath: string,
+  record: FtsWriterLockRecord,
+): Promise<void> {
+  try {
+    const current = await readFtsWriterLock(root, relativePath, absolutePath);
+    if (current === serializeFtsWriterLock(record)) await unlink(absolutePath);
+  } catch { /* an unverifiable replacement remains blocking */ }
 }
 
 async function removeIfPresent(path: string): Promise<void> {
@@ -533,15 +938,28 @@ export class NodeSqliteFtsAdapter {
     relativeDbPath: string,
     inputSources: readonly HybridIndexSourceV03[],
     indexMetadata: HybridIndexMetadataV03,
+    options: SqliteFtsRebuildOptionsV03 = {},
   ): Promise<SqliteFtsRebuildResultV03> {
-    const assertWithinDeadline = createCooperativeDeadlineV03(
+    if (typeof options !== 'object' || options === null || Array.isArray(options)
+      || Object.keys(options).some((key) => !['signal', 'state_dir'].includes(key))) {
+      throw new PrimeContextError('CONFIG_ERROR', 'Invalid SQLite/FTS rebuild options');
+    }
+    const assertWithinDeadline = cooperativeOperationCheck(createCooperativeDeadlineV03(
       this.monotonicNow,
       OPTIONAL_ADAPTER_DEADLINE_MS,
       'SQLite/FTS rebuild',
-    );
+    ), options.signal, 'SQLite/FTS rebuild');
     assertWithinDeadline();
     const resolvedRoot = resolve(root);
-    validateIndexPath(relativeDbPath);
+    const stateDirectory = options.state_dir ?? DEFAULT_SQLITE_FTS_STATE_DIR_V03;
+    validateIndexPath(relativeDbPath, stateDirectory);
+    const pendingWriterKey = writerLockKey(assertPathInsideRoot(resolvedRoot, relativeDbPath));
+    if (pendingWriters.has(pendingWriterKey) || activeWriters.has(pendingWriterKey)) {
+      throw new PrimeContextError('STATE_ERROR', 'FTS index already has an active writer');
+    }
+    pendingWriters.add(pendingWriterKey);
+    try {
+      await assertPhysicalIndexPathSafe(resolvedRoot, relativeDbPath, stateDirectory, true);
     if (typeof indexMetadata !== 'object' || indexMetadata === null
       || Object.keys(indexMetadata).some((key) => key !== 'repository_id' && key !== 'worktree_digest')
       || typeof indexMetadata.repository_id !== 'string' || indexMetadata.repository_id.length === 0
@@ -586,6 +1004,7 @@ export class NodeSqliteFtsAdapter {
     const Database = await loadDatabaseSync();
 
     const absolute = assertPathInsideRoot(resolvedRoot, relativeDbPath);
+    const writerLockRecord = createFtsWriterLockRecord();
     const lockKey = writerLockKey(absolute);
     if (activeWriters.has(lockKey)) throw new PrimeContextError('STATE_ERROR', 'FTS index already has an active writer');
     activeWriters.add(lockKey);
@@ -602,21 +1021,24 @@ export class NodeSqliteFtsAdapter {
     let database: DatabaseSync | undefined;
     try {
       assertWithinDeadline();
-      await ensureSafeIndexParent(resolvedRoot, relativeDbPath);
+      await ensureSafeIndexParent(resolvedRoot, stateDirectory, relativeDbPath);
       assertWithinDeadline();
       await assertNoSymbolicLinkComponents(resolvedRoot, lockRelative, { allowMissing: true });
-      try {
-        lockHandle = await open(lockAbsolute, 'wx', 0o600);
-        lockCreated = true;
-      } catch (error) {
-        if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'EEXIST') {
-          throw new PrimeContextError('STATE_ERROR', 'FTS index already has an active writer');
-        }
-        throw error;
-      }
+      lockHandle = await acquireFtsWriterLock(
+        resolvedRoot,
+        lockRelative,
+        lockAbsolute,
+        writerLockRecord,
+      );
+      lockCreated = true;
+      assertWithinDeadline();
       await assertNoSymbolicLinkComponents(resolvedRoot, relativeDbPath, { allowMissing: true });
-      const handle = await open(temporaryAbsolute, 'wx');
-      await handle.close();
+      const handle = await open(temporaryAbsolute, 'wx', 0o600);
+      try {
+        if (process.platform !== 'win32') await handle.chmod(0o600);
+      } finally {
+        await handle.close();
+      }
       temporaryMayExist = true;
       database = openDatabase(Database, temporaryAbsolute, false);
       configureConnection(database, false);
@@ -638,10 +1060,7 @@ export class NodeSqliteFtsAdapter {
           symbol TEXT,
           source_truncated INTEGER NOT NULL CHECK(source_truncated IN (0, 1))
         ) STRICT;
-        CREATE VIRTUAL TABLE entries_fts USING fts5(
-          source_id UNINDEXED, path UNINDEXED, title, content,
-          tokenize='unicode61 remove_diacritics 0'
-        );
+        ${ENTRIES_FTS_SCHEMA_DDL};
       `);
       assertWithinDeadline();
       let ftsSecureDelete = false;
@@ -649,10 +1068,16 @@ export class NodeSqliteFtsAdapter {
         database.exec("INSERT INTO entries_fts(entries_fts, rank) VALUES('secure-delete', 1);");
         ftsSecureDelete = true;
       } catch { /* SQLite versions before FTS5 secure-delete remain supported. */ }
+      const toolchain = inspectSqliteToolchain(database);
 
       const rows = sourceRows(sources, assertWithinDeadline);
       assertWithinDeadline();
-      const indexDigest = canonicalIndexDigest(indexMetadata.repository_id, indexMetadata.worktree_digest, rows);
+      const indexDigest = canonicalIndexDigest(
+        indexMetadata.repository_id,
+        indexMetadata.worktree_digest,
+        toolchain,
+        rows,
+      );
       assertWithinDeadline();
       const insertMetadata = database.prepare('INSERT INTO metadata(key, value) VALUES (?, ?)');
       const insertSource = database.prepare(`
@@ -662,7 +1087,7 @@ export class NodeSqliteFtsAdapter {
       const insertFts = database.prepare('INSERT INTO entries_fts(rowid, source_id, path, title, content) VALUES (?, ?, ?, ?, ?)');
       database.exec('BEGIN IMMEDIATE;');
       try {
-        for (const [key, value] of [
+        const metadataEntries: Array<readonly [string, string]> = [
           ['schema_version', '0.3'],
           ['repository_id', indexMetadata.repository_id],
           ['worktree_digest', indexMetadata.worktree_digest],
@@ -670,7 +1095,11 @@ export class NodeSqliteFtsAdapter {
           ['indexed_source_count', String(sources.length)],
           ['secure_delete', '1'],
           ['fts_secure_delete', ftsSecureDelete ? '1' : '0'],
-        ] as const) insertMetadata.run(key, value);
+          ['sqlite_version', toolchain.sqlite_version],
+          ['fts5_available', '1'],
+          ...(toolchain.fts5_source_id ? [['fts5_source_id', toolchain.fts5_source_id] as const] : []),
+        ];
+        for (const [key, value] of metadataEntries) insertMetadata.run(key, value);
         for (let index = 0; index < sources.length; index += 1) {
           assertWithinDeadline();
           const source = sources[index] as NormalizedSource;
@@ -714,12 +1143,30 @@ export class NodeSqliteFtsAdapter {
       await rename(temporaryAbsolute, absolute);
       temporaryMayExist = false;
       await assertNoSymbolicLinkComponents(resolvedRoot, relativeDbPath);
-      const finalStat = await lstat(absolute);
+      let finalStat = await lstat(absolute);
       if (!finalStat.isFile() || finalStat.isSymbolicLink()) {
         throw new PrimeContextError('SECURITY_ERROR', 'FTS index replacement is not a regular file');
       }
+      if (process.platform !== 'win32') {
+        const finalHandle = await open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW);
+        try {
+          const handleStat = await finalHandle.stat();
+          if (!sameRegularFileSnapshot(finalStat, handleStat)) {
+            throw new PrimeContextError('SECURITY_ERROR', 'FTS index changed before permission hardening');
+          }
+          await finalHandle.chmod(0o600);
+        } finally {
+          await finalHandle.close();
+        }
+        await assertNoSymbolicLinkComponents(resolvedRoot, relativeDbPath);
+        finalStat = await lstat(absolute);
+        if (!finalStat.isFile() || finalStat.isSymbolicLink() || (finalStat.mode & 0o777) !== 0o600) {
+          throw new PrimeContextError('SECURITY_ERROR', 'FTS index permissions could not be hardened');
+        }
+      }
       return {
         schema_version: '0.3',
+        toolchain,
         index_path: relativeDbPath,
         index_digest: indexDigest,
         worktree_digest: indexMetadata.worktree_digest,
@@ -741,9 +1188,17 @@ export class NodeSqliteFtsAdapter {
     } finally {
       try { await lockHandle?.close(); } catch { /* preserve original result */ }
       if (lockCreated) {
-        try { await removeIfPresent(lockAbsolute); } catch { /* preserve original result */ }
+        await releaseOwnedFtsWriterLock(
+          resolvedRoot,
+          lockRelative,
+          lockAbsolute,
+          writerLockRecord,
+        );
       }
-      activeWriters.delete(lockKey);
+        activeWriters.delete(lockKey);
+      }
+    } finally {
+      pendingWriters.delete(pendingWriterKey);
     }
   }
 
@@ -753,21 +1208,26 @@ export class NodeSqliteFtsAdapter {
     query: string,
     options: SqliteFtsSearchOptionsV03,
   ): Promise<SqliteFtsSearchResultV03> {
-    const assertWithinDeadline = createCooperativeDeadlineV03(
+    if (typeof options !== 'object' || options === null || Array.isArray(options)
+      || Object.keys(options).some((key) => !['expected_worktree_digest', 'limit', 'signal', 'state_dir'].includes(key))) {
+      throw new PrimeContextError('VALIDATION_ERROR', 'FTS search options are invalid');
+    }
+    const assertWithinDeadline = cooperativeOperationCheck(createCooperativeDeadlineV03(
       this.monotonicNow,
       OPTIONAL_ADAPTER_DEADLINE_MS,
       'SQLite/FTS search',
-    );
+    ), options.signal, 'SQLite/FTS search');
     assertWithinDeadline();
     const terms = tokenizeQuery(query);
-    if (typeof options !== 'object' || options === null) throw new PrimeContextError('VALIDATION_ERROR', 'FTS search options are required');
     validateHash(options.expected_worktree_digest, 'Expected FTS worktree digest');
     const limit = options.limit ?? 10;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_HITS) {
       throw new PrimeContextError('VALIDATION_ERROR', 'FTS search limit must be from 1 through 50');
     }
-    validateIndexPath(relativeDbPath);
+    const stateDirectory = options.state_dir ?? DEFAULT_SQLITE_FTS_STATE_DIR_V03;
+    validateIndexPath(relativeDbPath, stateDirectory);
     const resolvedRoot = resolve(root);
+    await assertPhysicalIndexPathSafe(resolvedRoot, relativeDbPath, stateDirectory, true);
     const Database = await loadDatabaseSync();
     const absolute = assertPathInsideRoot(resolvedRoot, relativeDbPath);
     await assertNoSymbolicLinkComponents(resolvedRoot, relativeDbPath);
@@ -777,20 +1237,29 @@ export class NodeSqliteFtsAdapter {
     if (stat.size > MAX_INDEX_BYTES) throw new PrimeContextError('CATALOG_ERROR', 'FTS index exceeds its byte limit');
 
     let database: DatabaseSync | undefined;
+    let readTransactionActive = false;
     try {
       database = openDatabase(Database, absolute, true);
       configureConnection(database, true);
+      database.exec('BEGIN;');
+      readTransactionActive = true;
       assertWithinDeadline();
+      const runtimeToolchain = inspectSqliteToolchain(database);
       const version = database.prepare('PRAGMA user_version').get();
       if (!version || !Object.values(version).some((value) => value === DB_SCHEMA_VERSION)) {
         throw new PrimeContextError('CATALOG_ERROR', 'FTS index schema version is unsupported');
       }
+      assertExpectedFtsSchema(database, assertWithinDeadline);
       const integrity = database.prepare('PRAGMA integrity_check').get();
       assertWithinDeadline();
       if (!integrity || !Object.values(integrity).some((value) => value === 'ok')) {
         throw new PrimeContextError('CATALOG_ERROR', 'FTS index integrity check failed');
       }
       const stored = metadata(database);
+      const toolchain = storedSqliteToolchain(stored);
+      if (!sameSqliteToolchain(toolchain, runtimeToolchain)) {
+        throw new PrimeContextError('CATALOG_ERROR', 'FTS index toolchain identity is stale for this runtime');
+      }
       assertWithinDeadline();
       validateHash(stored.worktree_digest, 'Stored FTS worktree digest');
       validateHash(stored.index_digest, 'Stored FTS index digest');
@@ -803,7 +1272,12 @@ export class NodeSqliteFtsAdapter {
       const rows = rowsFromDatabase(database, assertWithinDeadline);
       assertFtsContentMatchesSources(database, assertWithinDeadline);
       assertWithinDeadline();
-      const actualDigest = canonicalIndexDigest(stored.repository_id, stored.worktree_digest, rows);
+      const actualDigest = canonicalIndexDigest(
+        stored.repository_id,
+        stored.worktree_digest,
+        toolchain,
+        rows,
+      );
       assertWithinDeadline();
       if (actualDigest !== stored.index_digest || Number(stored.indexed_source_count) !== rows.length) {
         throw new PrimeContextError('CATALOG_ERROR', 'FTS index digest does not match source metadata');
@@ -854,14 +1328,22 @@ export class NodeSqliteFtsAdapter {
         });
       }
       assertWithinDeadline();
-      return {
+      const result: SqliteFtsSearchResultV03 = {
         schema_version: '0.3',
+        toolchain,
         hits,
         index_digest: stored.index_digest,
         worktree_digest: stored.worktree_digest,
         repository_id: stored.repository_id,
       };
+      database.exec('COMMIT;');
+      readTransactionActive = false;
+      return result;
     } catch (error) {
+      if (readTransactionActive) {
+        try { database?.exec('ROLLBACK;'); } catch { /* preserve the original search failure */ }
+        readTransactionActive = false;
+      }
       if (error instanceof PrimeContextError) throw error;
       throw new PrimeContextError('CATALOG_ERROR', 'Unable to search the local FTS index', [
         error instanceof Error ? error.message : String(error),

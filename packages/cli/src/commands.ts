@@ -13,19 +13,29 @@ import {
 } from '@primecontext/core';
 import { generateRepoMap } from '@primecontext/repo-map';
 import { isValidTaskId, taskTypes, validateTaskCapsule } from '@primecontext/schemas';
-import { CONFIG_FILE, defaultConfig, loadConfig } from './config.js';
 import {
+  CONFIG_FILE,
+  defaultConfig,
+  loadConfig,
+  parseConfig,
+  type PrimeContextConfig,
+} from './config.js';
+import {
+  assertStateDirectoryIgnored,
   ensureSafeDirectory,
   MAX_JSON_INPUT_BYTES,
   MAX_METRIC_RECORDS,
   MAX_METRICS_BYTES,
+  parseBoundedJson,
   readInternalJson,
   readInternalText,
   readRepositoryJson,
   repositoryRelativePath,
   stateDirectoryIgnoreEntry,
+  withInternalExclusiveLock,
   writeInternalJson,
-  writeInternalText,
+  writeInternalTextAtomic,
+  writeInternalTextIfAbsentAtomic,
 } from './safe-io.js';
 
 function stateRelativePath(root: string, configured: string): string {
@@ -40,39 +50,102 @@ function assertSafeTaskId(taskId: unknown): asserts taskId is string {
   if (!isValidTaskId(taskId)) throw new PrimeContextError('SECURITY_ERROR', 'task_id must be a safe bounded identifier');
 }
 
+async function publishStateDirectoryIgnore(root: string, configuredStateDirectory: string): Promise<void> {
+  const ignorePath = '.gitignore';
+  const ignore = await readInternalText(root, ignorePath, MAX_JSON_INPUT_BYTES, { allowMissing: true }) ?? '';
+  const ignoreEntry = stateDirectoryIgnoreEntry(configuredStateDirectory);
+  if (!ignore.split(/\r?\n/).includes(ignoreEntry)) {
+    const prefix = ignore.length > 0 && !ignore.endsWith('\n') ? '\n' : '';
+    try {
+      await writeInternalTextAtomic(root, ignorePath, `${ignore}${prefix}${ignoreEntry}\n`);
+    } catch (error) {
+      let concurrentlyPublished = false;
+      try {
+        const current = await readInternalText(root, ignorePath, MAX_JSON_INPUT_BYTES, { allowMissing: true });
+        concurrentlyPublished = current?.split(/\r?\n/).includes(ignoreEntry) === true;
+      } catch { /* preserve the publication failure */ }
+      if (!concurrentlyPublished) throw error;
+    }
+  }
+  await assertStateDirectoryIgnored(root, configuredStateDirectory);
+}
+
+interface InitializationConfigObservation {
+  config: PrimeContextConfig;
+  exists: boolean;
+  identity: string;
+}
+
+async function observeInitializationConfig(root: string): Promise<InitializationConfigObservation> {
+  const content = await readInternalText(root, CONFIG_FILE, MAX_JSON_INPUT_BYTES, { allowMissing: true });
+  const config = content === undefined
+    ? defaultConfig()
+    : parseConfig(parseBoundedJson(content, 'CONFIG_ERROR', CONFIG_FILE));
+  return { config, exists: content !== undefined, identity: JSON.stringify(config) };
+}
+
 export async function initCommand(root: string): Promise<{ config_path: string; state_dir: string; created_config: boolean }> {
   const resolvedRoot = resolve(root);
   const configPath = join(resolvedRoot, CONFIG_FILE);
-  let createdConfig = false;
-  const existingConfig = await readInternalText(resolvedRoot, CONFIG_FILE, MAX_JSON_INPUT_BYTES, { allowMissing: true });
-  if (existingConfig === undefined) {
-    await writeInternalText(resolvedRoot, CONFIG_FILE, `${JSON.stringify(defaultConfig(), null, 2)}\n`);
-    createdConfig = true;
-  }
-  const config = await loadConfig(resolvedRoot);
-  const localStateRelative = stateRelativePath(resolvedRoot, config.state_dir);
-  const localState = await ensureSafeDirectory(resolvedRoot, localStateRelative);
-  await ensureSafeDirectory(resolvedRoot, join(localStateRelative, 'capsules'));
-  await ensureSafeDirectory(resolvedRoot, join(localStateRelative, 'tasks'));
+  let observation = await observeInitializationConfig(resolvedRoot);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await publishStateDirectoryIgnore(resolvedRoot, observation.config.state_dir);
+    const confirmed = await observeInitializationConfig(resolvedRoot);
+    if (confirmed.identity !== observation.identity) {
+      observation = confirmed;
+      continue;
+    }
 
-  const ignorePath = '.gitignore';
-  const ignore = await readInternalText(resolvedRoot, ignorePath, MAX_JSON_INPUT_BYTES, { allowMissing: true }) ?? '';
-  const ignoreEntry = stateDirectoryIgnoreEntry(config.state_dir);
-  if (!ignore.split(/\r?\n/).includes(ignoreEntry)) {
-    const prefix = ignore.length > 0 && !ignore.endsWith('\n') ? '\n' : '';
-    await writeInternalText(resolvedRoot, ignorePath, `${ignore}${prefix}${ignoreEntry}\n`);
+    const localStateRelative = stateRelativePath(resolvedRoot, observation.config.state_dir);
+    await assertStateDirectoryIgnored(resolvedRoot, observation.config.state_dir);
+    return withInternalExclusiveLock(resolvedRoot, join(localStateRelative, 'init.lock'), async () => {
+      const locked = await observeInitializationConfig(resolvedRoot);
+      if (locked.identity !== observation.identity) {
+        throw new PrimeContextError('STATE_ERROR', 'Repository configuration changed during initialization; retry');
+      }
+      let createdConfig = false;
+      if (!locked.exists) {
+        createdConfig = await writeInternalTextIfAbsentAtomic(
+          resolvedRoot,
+          CONFIG_FILE,
+          `${JSON.stringify(observation.config, null, 2)}\n`,
+          { temporaryDirectory: localStateRelative },
+        );
+      }
+      const published = await observeInitializationConfig(resolvedRoot);
+      if (!published.exists || published.identity !== observation.identity) {
+        throw new PrimeContextError('STATE_ERROR', 'Repository configuration changed during initialization; retry');
+      }
+      await assertStateDirectoryIgnored(resolvedRoot, observation.config.state_dir);
+      const localState = await ensureSafeDirectory(resolvedRoot, localStateRelative);
+      await ensureSafeDirectory(resolvedRoot, join(localStateRelative, 'capsules'));
+      await ensureSafeDirectory(resolvedRoot, join(localStateRelative, 'tasks'));
+      const finalized = await observeInitializationConfig(resolvedRoot);
+      if (!finalized.exists || finalized.identity !== observation.identity) {
+        throw new PrimeContextError('STATE_ERROR', 'Repository configuration changed during initialization; retry');
+      }
+      await assertStateDirectoryIgnored(resolvedRoot, finalized.config.state_dir);
+      return { config_path: configPath, state_dir: localState, created_config: createdConfig };
+    }, { operation: 'initialize-state-ignore' });
   }
-  return { config_path: configPath, state_dir: localState, created_config: createdConfig };
+  throw new PrimeContextError('STATE_ERROR', 'Repository configuration changed repeatedly during initialization; retry');
 }
 
 export async function mapCommand(root: string): Promise<{ map_path: string; module_count: number }> {
   const resolvedRoot = resolve(root);
   const config = await loadConfig(resolvedRoot);
   const localState = stateRelativePath(resolvedRoot, config.state_dir);
+  await assertStateDirectoryIgnored(resolvedRoot, config.state_dir);
   await ensureSafeDirectory(resolvedRoot, localState);
-  const map = await generateRepoMap(resolvedRoot, new NodeFileSystemAdapter(config.exclude), new NodeGitAdapter());
+  const map = await generateRepoMap(
+    resolvedRoot,
+    new NodeFileSystemAdapter([...new Set([...config.exclude, config.state_dir])]),
+    new NodeGitAdapter(),
+  );
   const mapRelativePath = join(localState, 'repo-map.json');
-  await writeInternalJson(resolvedRoot, mapRelativePath, map);
+  await withInternalExclusiveLock(resolvedRoot, join(localState, 'repo-map.lock'), async () => {
+    await writeInternalJson(resolvedRoot, mapRelativePath, map);
+  }, { operation: 'replace-repository-map' });
   return { map_path: absoluteRepositoryPath(resolvedRoot, mapRelativePath), module_count: map.summary.module_count };
 }
 
@@ -150,6 +223,7 @@ export async function taskCommand(root: string, taskId: string, fromFile?: strin
   assertSafeTaskId(taskId);
   const config = await loadConfig(resolvedRoot);
   const localState = stateRelativePath(resolvedRoot, config.state_dir);
+  await assertStateDirectoryIgnored(resolvedRoot, config.state_dir);
   const definitionInput = fromFile
     ? await readRepositoryJson(resolvedRoot, fromFile)
     : await readInternalJson(resolvedRoot, join(localState, 'tasks', `${taskId}.json`));
@@ -163,13 +237,16 @@ export async function taskCommand(root: string, taskId: string, fromFile?: strin
   const capsuleDir = join(localState, 'capsules');
   await ensureSafeDirectory(resolvedRoot, capsuleDir);
   const capsulePath = join(capsuleDir, `${taskId}.json`);
-  await writeInternalJson(resolvedRoot, capsulePath, capsule);
+  await withInternalExclusiveLock(resolvedRoot, join(capsuleDir, `${taskId}.lock`), async () => {
+    await writeInternalJson(resolvedRoot, capsulePath, capsule);
+  }, { operation: 'replace-task-capsule' });
   return { capsule_path: absoluteRepositoryPath(resolvedRoot, capsulePath) };
 }
 
 export async function inspectCommand(root: string, taskId: string): Promise<{ task_id: string; goal: string; task_type: string; context_budget: ContextBudget }> {
   assertSafeTaskId(taskId);
   const config = await loadConfig(root);
+  await assertStateDirectoryIgnored(root, config.state_dir);
   const capsulePath = join(stateRelativePath(root, config.state_dir), 'capsules', `${taskId}.json`);
   const capsule = await readInternalJson(root, capsulePath);
   const validation = validateTaskCapsule(capsule);
@@ -185,7 +262,7 @@ export async function handoffValidateCommand(file: string, root = process.cwd())
 
 const numericMetricFields: readonly MetricNumericField[] = [
   'input_tokens','cached_input_tokens','output_tokens','tool_calls','file_reads','codegraph_calls',
-  'context_expansions','duration_ms','selected_context_tokens','rework_count',
+  'context_expansions','duration_ms','selected_context_tokens','agent_output_tokens','rework_count',
 ];
 
 function parseMetricLines(content: string): ReturnType<typeof assertValidMetricRecord>[] {
@@ -202,6 +279,7 @@ function parseMetricLines(content: string): ReturnType<typeof assertValidMetricR
 export async function metricsCommand(root: string): Promise<{ record_count: number; totals: Partial<Record<MetricNumericField, number>>; estimated_fields: MetricNumericField[] }> {
   const resolvedRoot = resolve(root);
   const config = await loadConfig(resolvedRoot);
+  await assertStateDirectoryIgnored(resolvedRoot, config.state_dir);
   const metricsPath = join(stateRelativePath(resolvedRoot, config.state_dir), 'metrics.jsonl');
   const content = await readInternalText(resolvedRoot, metricsPath, MAX_METRICS_BYTES, { allowMissing: true });
   if (content === undefined) return { record_count: 0, totals: {}, estimated_fields: [] };
@@ -226,15 +304,19 @@ export async function metricsCommand(root: string): Promise<{ record_count: numb
 export async function recordMetricCommand(root: string, file: string): Promise<{ metrics_path: string; record_count: number }> {
   const resolvedRoot = resolve(root);
   const config = await loadConfig(resolvedRoot);
+  await assertStateDirectoryIgnored(resolvedRoot, config.state_dir);
   const record = assertValidMetricRecord(await readRepositoryJson(resolvedRoot, file));
   const metricsPath = join(stateRelativePath(resolvedRoot, config.state_dir), 'metrics.jsonl');
-  const existing = await readInternalText(resolvedRoot, metricsPath, MAX_METRICS_BYTES, { allowMissing: true }) ?? '';
-  const records = parseMetricLines(existing);
-  if (records.length >= MAX_METRIC_RECORDS) throw new PrimeContextError('IO_ERROR', `metrics.jsonl reached the ${MAX_METRIC_RECORDS} record limit`);
-  const next = `${existing}${existing.length > 0 && !existing.endsWith('\n') ? '\n' : ''}${JSON.stringify(record)}\n`;
-  if (Buffer.byteLength(next, 'utf8') > MAX_METRICS_BYTES) throw new PrimeContextError('IO_ERROR', 'metrics.jsonl would exceed the byte limit');
-  await writeInternalText(resolvedRoot, metricsPath, next);
-  return { metrics_path: absoluteRepositoryPath(resolvedRoot, metricsPath), record_count: records.length + 1 };
+  const lockPath = join(stateRelativePath(resolvedRoot, config.state_dir), 'metrics.lock');
+  return withInternalExclusiveLock(resolvedRoot, lockPath, async () => {
+    const existing = await readInternalText(resolvedRoot, metricsPath, MAX_METRICS_BYTES, { allowMissing: true }) ?? '';
+    const records = parseMetricLines(existing);
+    if (records.length >= MAX_METRIC_RECORDS) throw new PrimeContextError('IO_ERROR', `metrics.jsonl reached the ${MAX_METRIC_RECORDS} record limit`);
+    const next = `${existing}${existing.length > 0 && !existing.endsWith('\n') ? '\n' : ''}${JSON.stringify(record)}\n`;
+    if (Buffer.byteLength(next, 'utf8') > MAX_METRICS_BYTES) throw new PrimeContextError('IO_ERROR', 'metrics.jsonl would exceed the byte limit');
+    await writeInternalTextAtomic(resolvedRoot, metricsPath, next);
+    return { metrics_path: absoluteRepositoryPath(resolvedRoot, metricsPath), record_count: records.length + 1 };
+  }, { operation: 'append-metric-record' });
 }
 
 export async function benchmarkCommand(armAFile: string, armBFile: string, root = process.cwd()): Promise<BenchmarkComparison> {

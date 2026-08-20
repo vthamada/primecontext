@@ -9,7 +9,7 @@
   ],
   "paths": [
     "src/Proposal/ProposalService.ts",
-    "tests/ProposalVersion.test.ts"
+    "tests/ProposalVersion.test.mjs"
   ],
   "terms": [
     "proposal",

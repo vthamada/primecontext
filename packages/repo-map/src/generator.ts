@@ -1,6 +1,15 @@
 import { basename, resolve } from 'node:path';
 import { posix } from 'node:path';
-import { PrimeContextError, type FileSystemPort, type GitPort, type RepoModule, type RepoModuleKind, type SemanticRepoMap } from '@primecontext/core';
+import {
+  PrimeContextError,
+  type FileSystemPort,
+  type GitPort,
+  type GitState,
+  type RepoModule,
+  type RepoModuleKind,
+  type SemanticRepoMap,
+  type WalkResult,
+} from '@primecontext/core';
 import { validateRepoMap } from '@primecontext/schemas';
 
 const conventionalRoles: Readonly<Record<string, { kind: RepoModuleKind; role: string }>> = {
@@ -46,10 +55,18 @@ async function packageModule(root: string, manifestPath: string, fsPort: FileSys
   }
 }
 
-export async function generateRepoMap(root: string, fsPort: FileSystemPort, gitPort: GitPort): Promise<SemanticRepoMap> {
+export interface RepoMapObservation {
+  walk: WalkResult;
+  git?: GitState;
+}
+
+async function buildRepoMap(
+  root: string,
+  fsPort: FileSystemPort,
+  observation: RepoMapObservation,
+): Promise<SemanticRepoMap> {
   const resolvedRoot = resolve(root);
-  const walk = await fsPort.walk(resolvedRoot);
-  const git = await gitPort.inspect(resolvedRoot);
+  const { walk, git } = observation;
   const modules = new Map<string, RepoModule>();
 
   for (const item of walk.paths) {
@@ -93,4 +110,21 @@ export async function generateRepoMap(root: string, fsPort: FileSystemPort, gitP
   const validation = validateRepoMap(map);
   if (!validation.valid) throw new PrimeContextError('VALIDATION_ERROR', 'Generated Semantic Repo Map is invalid', validation.errors);
   return map;
+}
+
+export async function generateRepoMapFromObservation(
+  root: string,
+  fsPort: FileSystemPort,
+  observation: RepoMapObservation,
+): Promise<SemanticRepoMap> {
+  return buildRepoMap(root, fsPort, observation);
+}
+
+export async function generateRepoMap(root: string, fsPort: FileSystemPort, gitPort: GitPort): Promise<SemanticRepoMap> {
+  const resolvedRoot = resolve(root);
+  const [walk, git] = await Promise.all([
+    fsPort.walk(resolvedRoot),
+    gitPort.inspect(resolvedRoot),
+  ]);
+  return buildRepoMap(resolvedRoot, fsPort, { walk, ...(git ? { git } : {}) });
 }

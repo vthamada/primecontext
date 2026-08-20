@@ -8,6 +8,7 @@ import {
 import { CONFIG_FILE, loadConfig } from './config.js';
 import {
   compilePreparedContext,
+  createContextPreparationObservation,
   prepareContextRequest,
   type PreparedContextResultV03,
 } from './context.js';
@@ -28,9 +29,9 @@ export interface PrimeContextCapabilitiesV03 {
   };
   commands: {
     setup: 'primecontext setup';
-    human_prepare: 'primecontext prepare <goal> [--accept <criterion>]... [--path <path>]... [--term <term>]...';
+    human_prepare: 'primecontext prepare <goal> [--type <task-type>] [--accept <criterion>]... [--path <path>]... [--term <term>]... [--full]';
     doctor: 'primecontext doctor';
-    prepare: 'primecontext context prepare --from <intent.json|->';
+    prepare: 'primecontext context prepare --from <intent.json|-> [--compact]';
     inspect: 'primecontext context inspect <task-id>';
   };
   contracts: {
@@ -76,9 +77,9 @@ export function capabilitiesCommand(_root = process.cwd()): PrimeContextCapabili
     },
     commands: {
       setup: 'primecontext setup',
-      human_prepare: 'primecontext prepare <goal> [--accept <criterion>]... [--path <path>]... [--term <term>]...',
+      human_prepare: 'primecontext prepare <goal> [--type <task-type>] [--accept <criterion>]... [--path <path>]... [--term <term>]... [--full]',
       doctor: 'primecontext doctor',
-      prepare: 'primecontext context prepare --from <intent.json|->',
+      prepare: 'primecontext context prepare --from <intent.json|-> [--compact]',
       inspect: 'primecontext context inspect <task-id>',
     },
     contracts: {
@@ -145,6 +146,12 @@ export async function contextPrepareCommand(root: string, from: string): Promise
   if (!validation.valid) {
     throw new PrimeContextError('VALIDATION_ERROR', 'Invalid ContextIntent', validation.errors);
   }
-  const request = await prepareContextRequest(resolve(root), structuredClone(value) as ContextIntentV03);
-  return compilePreparedContext(resolve(root), request);
+  const resolvedRoot = resolve(root);
+  const observation = await createContextPreparationObservation(resolvedRoot);
+  const request = await prepareContextRequest(
+    resolvedRoot,
+    structuredClone(value) as ContextIntentV03,
+    observation,
+  );
+  return compilePreparedContext(resolvedRoot, request, observation);
 }

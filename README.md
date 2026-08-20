@@ -35,7 +35,7 @@ The separately scoped first v0.2 slice is now implemented in this source checkou
 
 The catalog is normally stored at `.primecontext/documents/catalog.json`. It never stores Markdown bodies, excerpts, plaintext terms, or a lexical index. The v0.1 configuration and commands remain compatible.
 
-The implementation and its current working-tree evidence are recorded in the [v0.2 Document Retrieval Verification](docs/verification/v0.2-document-retrieval-verification.md). This is implementation verification, not public-release or publication authorization.
+The implementation's dated point-in-time evidence is recorded in the [v0.2 Document Retrieval Verification](docs/verification/v0.2-document-retrieval-verification.md). It predates the current consolidation and is not public-release or publication authorization.
 
 This slice does not implement FTS/SQLite, semantic search, embeddings, Context Scout, general ranking/pruning, CodeGraph, MCP, hosted services, telemetry, memory, or automatic Task Capsule integration.
 
@@ -62,24 +62,45 @@ Document Catalog/search remains metadata-only/live. The compiler makes no
 state-of-the-art, causal, token-savings, or quality-superiority claim. Its scope
 authorization and its implementation verification are separate gates.
 
-The current working-tree implementation evidence is recorded in the
+The original compiler slice's dated point-in-time evidence is recorded in the
 [v0.3 Proof-Carrying Context Compiler Verification](docs/verification/v0.3-proof-carrying-context-compiler-verification.md).
 The additive human/agent onboarding surface has its own
 [v0.3 Agent Usability Extension Verification](docs/verification/v0.3-agent-usability-extension-verification.md).
-That record verifies the authorized vertical slice only; it is not a release,
-benchmark, causality, or state-of-the-art claim.
+Those records verify their earlier authorized vertical slices only. The current
+consolidation has a separate [working-tree verification
+record](docs/verification/v0.3-consolidation-verification.md) and a complete
+[audit-resolution matrix](docs/verification/v0.3-consolidation-audit-resolution.md).
+Only explicit command rows in the working-tree record are point-in-time local
+evidence. Immutable, Linux, remote-CI, advisory, legal, publication, pilot, and
+benchmark gates remain separate; no record is a release, benchmark, causality,
+or state-of-the-art claim.
 
 ## Requirements
 
 - Node.js 22.13 or newer.
 - Node.js 24 LTS is the preferred line for new development environments.
 
+Every supported runtime has the complete safe filesystem/document fallback.
+The optional in-process SQLite/FTS accelerator is enabled only on Node releases
+where that module has reached release-candidate status (Node 24.15+, Node
+25.7+, and later lines). Earlier builds emit an experimental runtime warning
+that would contaminate the strict process-JSON channel. TypeScript CodeGraph
+remains independently capability-detected.
+
 ## Development setup
 
 ```bash
 npm ci
-npm run check
+npm run verify
 ```
+
+The repository is configured to run a cross-platform verification surface in
+GitHub Actions on Node.js 22.13 and 24 across Linux and Windows. It includes
+contracts/typecheck, the complete test suite, build, executable sample,
+disposable demo, Markdown links, package tarball inspection, and
+generated-diff checks. A checked-in workflow is not evidence that a remote run
+has passed; this is technical preparation, not license or npm-publication
+authorization.
 
 ## Try it in one command
 
@@ -128,13 +149,19 @@ into the strict internal contract, attempts the local index, and uses safe
 fallback automatically. A person does not need to author JSON, task IDs,
 snapshots, hashes, or budgets.
 
+Human `prepare` output is compact by default: it contains the prompt-facing
+envelope, bounded warnings and missing evidence, a receipt summary/reference,
+and next commands, with a 1 MiB hard ceiling. Add `--full` only when the caller
+needs the complete request and receipt. Use `--type <task-type>` to override the
+conservative `small_code_fix` default explicitly.
+
 The lower-level machine and compatibility commands remain available:
 
 ```bash
 node /absolute/path/to/primecontext/packages/cli/dist/bin.js init
 node /absolute/path/to/primecontext/packages/cli/dist/bin.js capabilities
 node /absolute/path/to/primecontext/packages/cli/dist/bin.js doctor
-node /absolute/path/to/primecontext/packages/cli/dist/bin.js context prepare --from tasks/primecontext-intent.json
+node /absolute/path/to/primecontext/packages/cli/dist/bin.js context prepare --from tasks/primecontext-intent.json --compact
 node /absolute/path/to/primecontext/packages/cli/dist/bin.js map
 node /absolute/path/to/primecontext/packages/cli/dist/bin.js docs index
 node /absolute/path/to/primecontext/packages/cli/dist/bin.js docs search "document retrieval" --limit 5 --authority specification
@@ -155,12 +182,18 @@ node /absolute/path/to/primecontext/packages/cli/dist/bin.js context ablate TASK
 
 Input files are repository-local and validated before domain execution. See the [v0.1 foundations CLI guide](docs/cli-usage-v0.1.md), [v0.2 document retrieval CLI guide](docs/cli-usage-v0.2.md), and [v0.3 compiler CLI guide](docs/cli-usage-v0.3.md). The v0.3 guide marks the implementation/verification boundary; do not assume an unverified command is available in a globally installed binary.
 
-For agents, `context prepare --from -` accepts one bounded JSON `ContextIntent`
-over standard input and returns the complete request, envelope, receipt, and
-stored-plan path as one JSON object. The [agent integration guide](docs/agent-integration-v0.3.md)
+For agents, `context prepare --from - --compact` accepts one bounded JSON
+`ContextIntent` over standard input and returns the prompt-facing envelope,
+missing-evidence summary, bounded warnings, receipt digest/reference, and next
+commands within a 1 MiB ceiling. Omitting `--compact` preserves the complete
+request/envelope/receipt response for compatibility and explicit inspection.
+Agents should keep the envelope in active context and follow the stored receipt
+reference only when inspection is needed. The
+[agent integration guide](docs/agent-integration-v0.3.md)
 and templates under `integrations/` use the same process protocol for generic
-agents, Codex, and Claude Code. Template parity is verified locally; this is not
-a claim that either proprietary host was executed.
+agents, Codex, and Claude Code. A local regression test checks the required
+protocol fragments in all templates; that is not evidence that either
+proprietary host was executed.
 
 ### `init`
 
@@ -178,6 +211,10 @@ package. Only accelerator unavailability falls back; validation, containment,
 security, and repository/worktree or selected-source freshness failures remain
 blocking. A stale optional accelerator index may be discarded in favor of
 freshly recollected safe sources.
+
+By default this command returns the compact agent-facing projection. Use
+`--full` for the complete request and receipt, and `--type` when the task is not
+a small code fix.
 
 Repository-local Markdown notes also work as knowledge-vault evidence without
 a connector, including notes edited with Obsidian. PrimeContext excludes the
@@ -202,7 +239,7 @@ These additive v0.3 commands build the optional local hybrid index, compile and
 inspect proof-carrying context plans, request bounded additional evidence,
 append a declared outcome, compare deterministic replay against current source,
 and derive a non-causal experimental ablation. They write validated ignored
-state only under the configured `.primecontext` directory; they neither execute
+state only under the configured state directory; they neither execute
 an agent nor edit project sources or external systems.
 
 ### `metrics record` and `metrics`
@@ -256,7 +293,11 @@ MaxSound is the first reference implementation, but MaxSound business logic must
 
 ## Benchmarks
 
-PrimeContext reports raw A/B deltas and quality status. A reduction in tokens or tool calls is **not** considered positive evidence if the PrimeContext-assisted arm regresses tests or review quality.
+PrimeContext reports raw A/B deltas plus independent quality, environment, and
+measurement gates. The comparator refuses `COMPARABLE_EVIDENCE` when the
+pre-registered run environments are absent or differ. A reduction in tokens or
+tool calls is **not** considered positive evidence if the PrimeContext-assisted
+arm regresses tests or review quality.
 
 No savings claim should be published without real A/B evidence.
 

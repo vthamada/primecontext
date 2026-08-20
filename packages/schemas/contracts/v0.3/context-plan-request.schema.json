@@ -155,6 +155,68 @@
         }
       }
     },
+    "progressive_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "soft",
+        "hard"
+      ],
+      "properties": {
+        "soft": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "max_items",
+            "max_bytes",
+            "max_estimated_tokens"
+          ],
+          "properties": {
+            "max_items": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 128
+            },
+            "max_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8388608
+            },
+            "max_estimated_tokens": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000000
+            }
+          }
+        },
+        "hard": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "max_items",
+            "max_bytes",
+            "max_estimated_tokens"
+          ],
+          "properties": {
+            "max_items": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 128
+            },
+            "max_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8388608
+            },
+            "max_estimated_tokens": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000000
+            }
+          }
+        }
+      }
+    },
     "snapshot": {
       "type": "object",
       "additionalProperties": false,

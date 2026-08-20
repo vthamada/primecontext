@@ -4,6 +4,7 @@ import {
   contextCandidateSchema,
   contextEnvelopeSchema,
   contextPlanRequestSchema,
+  contextTruncationReasons,
   outcomeDeclarationSchema,
   outcomeReceiptSchema,
   selectionReceiptSchema,
@@ -50,11 +51,62 @@ test('exports versioned v0.3 context compiler schemas', () => {
   assert.match(contextCandidateSchema.$id, /\/v0\.3\/context-candidate\.schema\.json$/);
   assert.match(contextEnvelopeSchema.$id, /\/v0\.3\/context-envelope\.schema\.json$/);
   assert.match(selectionReceiptSchema.$id, /\/v0\.3\/selection-receipt\.schema\.json$/);
+  assert.deepEqual(contextTruncationReasons, [
+    'CANDIDATE_SET_LIMIT', 'EXCERPT_BOUND', 'PROVIDER_RESULT_LIMIT', 'SOURCE_COLLECTION_LIMIT',
+  ]);
 });
 
 test('accepts bounded plan requests and candidates', () => {
   assert.deepEqual(validateContextPlanRequest(request), { valid: true, errors: [] });
   assert.deepEqual(validateContextCandidate(candidate), { valid: true, errors: [] });
+});
+
+test('accepts legacy candidate discovery without explicit truncation reasons', () => {
+  assert.equal(Object.hasOwn(candidate.discovery, 'truncation_reasons'), false);
+  assert.deepEqual(validateContextCandidate(candidate), { valid: true, errors: [] });
+});
+
+test('validates explicit candidate truncation reasons and their legacy boolean invariant', () => {
+  const explicitlyTruncated = {
+    ...candidate,
+    discovery: {
+      ...candidate.discovery,
+      truncated: true,
+      truncation_reasons: ['EXCERPT_BOUND', 'PROVIDER_RESULT_LIMIT'],
+    },
+  };
+  assert.equal(validateContextCandidate(explicitlyTruncated).valid, true);
+  assert.equal(validateContextCandidate({
+    ...explicitlyTruncated,
+    discovery: { ...explicitlyTruncated.discovery, truncated: false },
+  }).valid, false);
+  assert.equal(validateContextCandidate({
+    ...explicitlyTruncated,
+    discovery: { ...explicitlyTruncated.discovery, truncation_reasons: ['UNKNOWN_LIMIT'] },
+  }).valid, false);
+  assert.equal(validateContextCandidate({
+    ...explicitlyTruncated,
+    discovery: { ...explicitlyTruncated.discovery, truncation_reasons: ['PROVIDER_RESULT_LIMIT', 'EXCERPT_BOUND'] },
+  }).valid, false);
+});
+
+test('accepts monotonic progressive budgets and rejects every inverted dimension', () => {
+  const progressive = {
+    soft: { max_items: 8, max_bytes: 8192, max_estimated_tokens: 2048 },
+    hard: { max_items: 16, max_bytes: 16384, max_estimated_tokens: 4096 },
+  };
+  assert.equal(validateContextPlanRequest({ ...request, progressive_budget: progressive }).valid, true);
+
+  for (const invalid of [
+    { ...progressive, soft: { ...progressive.soft, max_items: 3 } },
+    { ...progressive, soft: { ...progressive.soft, max_bytes: 4095 } },
+    { ...progressive, soft: { ...progressive.soft, max_estimated_tokens: 1023 } },
+    { ...progressive, hard: { ...progressive.hard, max_items: 7 } },
+    { ...progressive, hard: { ...progressive.hard, max_bytes: 8191 } },
+    { ...progressive, hard: { ...progressive.hard, max_estimated_tokens: 2047 } },
+  ]) {
+    assert.equal(validateContextPlanRequest({ ...request, progressive_budget: invalid }).valid, false);
+  }
 });
 
 test('publishes UTF-8 byte ceilings on every v0.3 byte-bounded text field', () => {
@@ -135,14 +187,14 @@ test('enforces the ContextCandidate excerpt byte and source-line bounds', () => 
   assert.equal(validateExcerpt(Array.from({ length: 401 }, () => 'x').join('\n')).valid, false);
 });
 
-test('accepts a minimal deterministic envelope and receipt', () => {
+test('accepts legacy deterministic envelope and receipt truncation without explicit reasons', () => {
   const envelope = {
     schema_version: '0.3', task_id: 'CTX-001', request_digest: hash('c'), selection_digest: hash('d'),
     policy_version: '0.3-default', snapshot: request.snapshot,
     evidence_status: 'READY', budget_status: 'WITHIN_BUDGET',
     budget: { ...request.budget, used_items: 1, used_bytes: 35, used_estimated_tokens: 9 },
     items: [{
-      ...candidate, mandatory: false, score: 1300,
+      ...candidate, mandatory: false, score: 680,
       score_components: { required_source: 0, applicable_policy: 0, hinted_path: 0, hinted_symbol: 0, required_terms: 120, query_terms: 160, graph_distance: 300, authority: 0, related_test: 0, live_freshness: 100 },
       selection_reason: 'INCLUDE_CRITERION_COVERAGE',
     }],
@@ -157,7 +209,7 @@ test('accepts a minimal deterministic envelope and receipt', () => {
     schema_version: '0.3', task_id: 'CTX-001', request_digest: hash('c'), selection_digest: hash('d'), receipt_digest: hash('e'),
     policy_version: '0.3-default',
     policy_components: { required_source: 10000, applicable_policy: 9000, hinted_path: 800, hinted_symbol: 700, required_terms: 120, query_terms: 80, graph_distance: 300, authority: 200, related_test: 100, live_freshness: 100 },
-    decisions: [{ candidate_id: hash('a'), status: 'INCLUDED', reason: 'INCLUDE_CRITERION_COVERAGE', mandatory: false, score: 1300,
+    decisions: [{ candidate_id: hash('a'), status: 'INCLUDED', reason: 'INCLUDE_CRITERION_COVERAGE', mandatory: false, score: 680,
       score_components: { required_source: 0, applicable_policy: 0, hinted_path: 0, hinted_symbol: 0, required_terms: 120, query_terms: 160, graph_distance: 300, authority: 0, related_test: 0, live_freshness: 100 },
       marginal_criteria_ids: ['AC-1'], marginal_terms: ['receipt'] }],
     duplicate_groups: [], conflicts: [], source_failures: [],
@@ -165,6 +217,81 @@ test('accepts a minimal deterministic envelope and receipt', () => {
   };
   assert.equal(validateContextEnvelope(envelope).valid, true);
   assert.equal(validateSelectionReceipt(receipt).valid, true);
+});
+
+test('validates explicit aggregate truncation reasons without coupling them to budget status', () => {
+  const selected = {
+    ...candidate,
+    discovery: {
+      ...candidate.discovery,
+      truncated: true,
+      truncation_reasons: ['EXCERPT_BOUND'],
+    },
+    mandatory: false,
+    score: 680,
+    score_components: {
+      required_source: 0, applicable_policy: 0, hinted_path: 0, hinted_symbol: 0,
+      required_terms: 120, query_terms: 160, graph_distance: 300, authority: 0,
+      related_test: 0, live_freshness: 100,
+    },
+    selection_reason: 'INCLUDE_CRITERION_COVERAGE',
+  };
+  const aggregate = {
+    considered_candidates: 1,
+    selected_candidates: 1,
+    omitted_candidates: 0,
+    source_truncated: true,
+    truncation_reasons: ['EXCERPT_BOUND'],
+  };
+  const envelope = {
+    schema_version: '0.3', task_id: 'CTX-001', request_digest: hash('c'), selection_digest: hash('d'),
+    policy_version: '0.3-default', snapshot: request.snapshot,
+    evidence_status: 'READY', budget_status: 'WITHIN_BUDGET',
+    budget: { ...request.budget, used_items: 1, used_bytes: 35, used_estimated_tokens: 9 },
+    items: [selected],
+    criteria_coverage: [{
+      criterion_id: 'AC-1', match_mode: 'ALL', required_terms: ['receipt'], status: 'COVERED',
+      candidate_ids: [hash('a')], matched_terms: ['receipt'],
+    }],
+    missing_required_sources: [], missing_required_terms: [], conflicts: [], source_failures: [],
+    truncation: aggregate,
+  };
+  const receipt = {
+    schema_version: '0.3', task_id: 'CTX-001', request_digest: hash('c'), selection_digest: hash('d'), receipt_digest: hash('e'),
+    policy_version: '0.3-default',
+    policy_components: {
+      required_source: 10000, applicable_policy: 9000, hinted_path: 800, hinted_symbol: 700,
+      required_terms: 120, query_terms: 80, graph_distance: 300, authority: 200,
+      related_test: 100, live_freshness: 100,
+    },
+    decisions: [{
+      candidate_id: hash('a'), status: 'INCLUDED', reason: 'INCLUDE_CRITERION_COVERAGE', mandatory: false, score: 680,
+      score_components: selected.score_components, marginal_criteria_ids: ['AC-1'], marginal_terms: ['receipt'],
+    }],
+    duplicate_groups: [], conflicts: [], source_failures: [], truncation: aggregate,
+  };
+
+  assert.equal(validateContextEnvelope(envelope).valid, true);
+  assert.equal(validateSelectionReceipt(receipt).valid, true);
+  assert.equal(validateContextEnvelope({
+    ...envelope,
+    truncation: { ...aggregate, source_truncated: false },
+  }).valid, false);
+  assert.equal(validateContextEnvelope({
+    ...envelope,
+    truncation: { ...aggregate, truncation_reasons: [] },
+  }).valid, false);
+  assert.equal(validateContextEnvelope({
+    ...envelope,
+    items: [{
+      ...selected,
+      discovery: { ...selected.discovery, truncated: false },
+    }],
+  }).valid, false);
+  assert.equal(validateSelectionReceipt({
+    ...receipt,
+    truncation: { ...aggregate, source_truncated: false },
+  }).valid, false);
 });
 
 test('rejects accessors and sparse arrays at the public validation boundary', () => {

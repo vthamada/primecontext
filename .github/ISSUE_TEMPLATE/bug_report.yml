@@ -1,0 +1,43 @@
+name: Bug report
+description: Report a reproducible PrimeContext defect without private repository content.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, private source text, customer data, generated context state, or unpublished vulnerability details. Follow SECURITY.md for security-sensitive reports.
+  - type: input
+    id: version
+    attributes:
+      label: PrimeContext commit or version
+      placeholder: Git commit SHA or package version
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: Runtime
+      placeholder: Node version, npm version, operating system
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed behavior
+      description: Use a sanitized disposable fixture and include the exact command and sanitized error code.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide only synthetic, non-sensitive files and steps.
+    validations:
+      required: true

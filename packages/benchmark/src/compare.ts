@@ -1,8 +1,15 @@
-import { assertValidMetricRecord, PrimeContextError, type MetricNumericField, type MetricRecord } from '@primecontext/core';
+import {
+  assertValidMetricRecord,
+  PrimeContextError,
+  type MetricNumericField,
+  type MetricRecord,
+  type MetricRunEnvironment,
+} from '@primecontext/core';
 
 const numericFields: readonly MetricNumericField[] = [
   'input_tokens', 'cached_input_tokens', 'output_tokens', 'tool_calls', 'file_reads',
-  'codegraph_calls', 'context_expansions', 'duration_ms', 'selected_context_tokens', 'rework_count',
+  'codegraph_calls', 'context_expansions', 'duration_ms', 'selected_context_tokens',
+  'agent_output_tokens', 'rework_count',
 ];
 
 export interface BenchmarkComparison {
@@ -10,8 +17,44 @@ export interface BenchmarkComparison {
   deltas: Partial<Record<MetricNumericField, number>>;
   estimated_fields: MetricNumericField[];
   measurement_gaps: Array<'completion_status'>;
+  measurement_gate: 'COMPARABLE' | 'MISSING';
+  environment_gate: 'MATCHED' | 'MISSING' | 'MISMATCH';
+  environment_mismatches: Array<keyof MetricRunEnvironment | 'run_environment'>;
   quality_gate: 'PASS' | 'FAIL' | 'UNKNOWN';
-  interpretation: 'COMPARABLE_EVIDENCE' | 'QUALITY_REGRESSION' | 'INSUFFICIENT_QUALITY_EVIDENCE';
+  interpretation:
+    | 'COMPARABLE_EVIDENCE'
+    | 'QUALITY_REGRESSION'
+    | 'INSUFFICIENT_QUALITY_EVIDENCE'
+    | 'INSUFFICIENT_ENVIRONMENT_EVIDENCE'
+    | 'INSUFFICIENT_MEASUREMENT_EVIDENCE';
+}
+
+const environmentFields: readonly (keyof MetricRunEnvironment)[] = [
+  'agent',
+  'commit',
+  'lockfile_hash',
+  'model',
+  'permissions',
+  'reasoning_effort',
+  'rubric',
+  'runtime',
+  'test_command',
+  'time_limit_ms',
+  'worktree_digest',
+];
+
+function compareEnvironments(
+  armA: MetricRunEnvironment | undefined,
+  armB: MetricRunEnvironment | undefined,
+): Pick<BenchmarkComparison, 'environment_gate' | 'environment_mismatches'> {
+  if (armA === undefined || armB === undefined) {
+    return { environment_gate: 'MISSING', environment_mismatches: ['run_environment'] };
+  }
+  const mismatches = environmentFields.filter((field) => armA[field] !== armB[field]);
+  return {
+    environment_gate: mismatches.length === 0 ? 'MATCHED' : 'MISMATCH',
+    environment_mismatches: mismatches,
+  };
 }
 
 function qualityGate(a: MetricRecord, b: MetricRecord): BenchmarkComparison['quality_gate'] {
@@ -40,7 +83,17 @@ export function compareBenchmarkArms(armAInput: MetricRecord, armBInput: MetricR
     [...(armA.estimated_fields ?? []), ...(armB.estimated_fields ?? [])].filter((field) => comparableFields.has(field)),
   );
   const quality = qualityGate(armA, armB);
-  const gate = quality === 'PASS' && comparableFields.size === 0 ? 'UNKNOWN' : quality;
+  const measurementGate: BenchmarkComparison['measurement_gate'] = comparableFields.size === 0 ? 'MISSING' : 'COMPARABLE';
+  const environment = compareEnvironments(armA.run_environment, armB.run_environment);
+  const interpretation: BenchmarkComparison['interpretation'] = quality === 'FAIL'
+    ? 'QUALITY_REGRESSION'
+    : quality !== 'PASS'
+      ? 'INSUFFICIENT_QUALITY_EVIDENCE'
+      : environment.environment_gate !== 'MATCHED'
+        ? 'INSUFFICIENT_ENVIRONMENT_EVIDENCE'
+        : measurementGate === 'MISSING'
+          ? 'INSUFFICIENT_MEASUREMENT_EVIDENCE'
+          : 'COMPARABLE_EVIDENCE';
   return {
     task_id: armA.task_id,
     deltas,
@@ -48,7 +101,9 @@ export function compareBenchmarkArms(armAInput: MetricRecord, armBInput: MetricR
     measurement_gaps: armA.completion_status === undefined || armB.completion_status === undefined
       ? ['completion_status']
       : [],
-    quality_gate: gate,
-    interpretation: gate === 'FAIL' ? 'QUALITY_REGRESSION' : gate === 'PASS' ? 'COMPARABLE_EVIDENCE' : 'INSUFFICIENT_QUALITY_EVIDENCE',
+    measurement_gate: measurementGate,
+    ...environment,
+    quality_gate: quality,
+    interpretation,
   };
 }

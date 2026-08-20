@@ -85,8 +85,22 @@ Create a repository-local metric record such as `evidence/arm-b.json`:
   "task_id": "TASK-001",
   "recorded_at": "2026-08-11T15:00:00.000Z",
   "arm": "B",
+  "run_environment": {
+    "commit": "<reviewed-commit>",
+    "worktree_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "agent": "<agent>",
+    "model": "<model>",
+    "reasoning_effort": "<fixed-effort>",
+    "permissions": "<fixed-permissions>",
+    "runtime": "node=<version>;platform=<os-arch>",
+    "lockfile_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "time_limit_ms": 600000,
+    "test_command": "npm test",
+    "rubric": "<approved-rubric-id>"
+  },
   "input_tokens": 7000,
   "output_tokens": 2400,
+  "agent_output_tokens": 5100,
   "tool_calls": 11,
   "file_reads": 9,
   "duration_ms": 150000,
@@ -95,7 +109,7 @@ Create a repository-local metric record such as `evidence/arm-b.json`:
   "review_status": "PASS",
   "completion_status": "PASS",
   "rework_count": 0,
-  "estimated_fields": []
+  "estimated_fields": ["agent_output_tokens"]
 }
 ```
 
@@ -120,7 +134,7 @@ node /absolute/path/to/primecontext/packages/cli/dist/bin.js benchmark \
   --b evidence/arm-b.json
 ```
 
-Both files must be repository-local validated MetricRecords for the same `task_id`, labeled `A` and `B`. The result reports raw `B - A` deltas, estimate labels, `measurement_gaps` such as absent optional completion evidence, and a conservative quality gate. Follow the [A/B benchmark methodology](benchmark-methodology-v0.1.md); fixture output is never a savings claim.
+Both files must be repository-local validated MetricRecords for the same `task_id`, labeled `A` and `B`. The result reports raw `B - A` deltas, estimate labels, `measurement_gaps` such as absent optional completion evidence, and separate quality, environment, and measurement gates. Legacy records without `run_environment` remain valid but cannot yield `COMPARABLE_EVIDENCE`. Follow the [A/B benchmark methodology](benchmark-methodology-v0.1.md); fixture output is never a savings claim.
 
 ## Exit behavior and debugging
 

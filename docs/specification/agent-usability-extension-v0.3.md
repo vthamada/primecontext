@@ -23,12 +23,15 @@ second selection policy.
   configuration, ignored-state protection, and next-action status. Missing
   initialization or ignore protection is reported as an action, not repaired
   implicitly.
-- `primecontext context prepare --from <intent.json|->` validates a
+- `primecontext context prepare --from <intent.json|-> [--compact]` validates a
   `ContextIntent`, binds it to the live accepted-source snapshot, derives a
   conservative budget from repository configuration, compiles it through the
   existing Core service, stores it through the existing plan lifecycle, and
   returns the generated request, envelope, receipt, and repository-relative
-  state path.
+  state path. The optional `--compact` projection returns the complete
+  prompt-facing envelope plus bounded warning, missing-evidence, receipt
+  reference, and next-command metadata under a 1 MiB output ceiling; omitting
+  it preserves the original complete response.
 - Existing single-input `--from` commands may accept `-` for one bounded UTF-8
   JSON value on standard input. Existing repository-file behavior remains
   unchanged.
@@ -97,6 +100,8 @@ installation is authorized by this extension.
    receipt linked to the same selection and stored plan.
 3. The same intent over stdin produces the same generated request and
    selection under the same live snapshot.
+   The compact projection omits the embedded request and receipt while keeping
+   a valid envelope and linked receipt digest/reference.
 4. Malformed, invalid UTF-8, oversized, empty, truncated, or interactive stdin
    fails before source collection with JSON-only sanitized errors.
 5. Existing v0.1-v0.3 commands and repository-file inputs remain compatible.

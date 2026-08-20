@@ -1,8 +1,18 @@
 {
   "name": "@primecontext/cli",
   "version": "0.1.0",
+  "description": "Command-line and process-JSON interface for local PrimeContext workflows.",
   "private": true,
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vthamada/primecontext.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/vthamada/primecontext#readme",
+  "bugs": {"url": "https://github.com/vthamada/primecontext/issues"},
+  "keywords": ["context-engineering", "coding-agents", "cli"],
+  "engines": {"node": ">=22.13"},
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": ["dist", "!dist/*.test.*"],

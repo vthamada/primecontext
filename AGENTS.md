@@ -28,6 +28,10 @@ The zero-configuration human automation extension is defined in:
 
 - `docs/specification/zero-config-automation-extension-v0.3.md`.
 
+The authorized v0.3 compatibility-preserving consolidation is defined in:
+
+- `docs/specification/v0.3-consolidation-specification.md`.
+
 This v0.3 slice is limited to a local Proof-Carrying Context Compiler. It
 accepts a validated `ContextPlanRequest`, discovers bounded candidates through
 the existing safe filesystem/document fallback plus optional local SQLite/FTS
@@ -66,6 +70,13 @@ compiler budgets. Setup must not overwrite configuration or agent instruction
 files, install dependencies, invoke a package manager, enable telemetry, launch
 a daemon, or connect an external vault without a separate preview/approval
 contract.
+
+The consolidation may correct demonstrated v0.3 budget, selection, policy,
+truncation, agent-output, collection, state-integrity, and verification defects
+without adding a new product capability. Preserve v0.1/v0.2 public behavior,
+use additive v0.3 contract fields or explicit compatibility paths, and keep
+license, publication, pilot, and benchmark claims as independent human/evidence
+gates.
 
 Repository-local Markdown notes may be consumed through the existing bounded
 document/filesystem paths, including notes edited by Obsidian. The `.obsidian`

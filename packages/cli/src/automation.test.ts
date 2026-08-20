@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { hostname } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test, { type TestContext } from 'node:test';
@@ -47,8 +48,10 @@ interface AutomatedPrepareResult {
       attempted: true;
       status: 'READY' | 'UNAVAILABLE';
       fallback_used: boolean;
+      reused?: boolean;
       error_code?: string;
     };
+    collection: { observations: 1 };
   };
 }
 
@@ -230,14 +233,21 @@ test('prepare <goal> bootstraps zero-config defaults and is deterministic withou
   assert.equal(first.request.task.query, goal);
   assert.deepEqual(first.request.task.acceptance_criteria, [{ id: 'AC-001', text: goal }]);
   assert.equal(first.request.task.hints, undefined);
+  assert.ok(first.request.progressive_budget);
+  assert.ok(first.request.budget.max_estimated_tokens <= first.request.progressive_budget.soft.max_estimated_tokens);
+  assert.ok(first.request.progressive_budget.soft.max_estimated_tokens <= first.request.progressive_budget.hard.max_estimated_tokens);
+  assert.equal(first.envelope.budget_tier, 'INITIAL');
   assert.deepEqual(second.request, first.request);
   assert.equal(second.envelope.selection_digest, first.envelope.selection_digest);
   assert.equal(second.receipt.receipt_digest, first.receipt.receipt_digest);
   assert.equal(first.automation.setup.created_config, true);
   assert.equal(second.automation.setup.created_config, false);
   assert.equal(first.automation.index.attempted, true);
+  assert.equal(first.automation.collection.observations, 1);
+  assert.equal(second.automation.collection.observations, 1);
   assert.ok(['READY', 'UNAVAILABLE'].includes(first.automation.index.status));
   assert.equal(first.automation.index.fallback_used, first.automation.index.status === 'UNAVAILABLE');
+  if (second.automation.index.status === 'READY') assert.equal(second.automation.index.reused, true);
   assert.deepEqual(JSON.parse(await readFile(join(root, 'primecontext.config.json'), 'utf8')), defaultConfig());
   assert.match(await readFile(join(root, '.gitignore'), 'utf8'), /(?:^|\n)\.primecontext\/(?:\n|$)/);
   const absolutePlanPath = resolve(root, first.plan_path);
@@ -287,6 +297,8 @@ test('prepare accepts repeatable human flags and canonicalizes unordered discove
   const goal = 'Trace alpha into beta';
   const run = runCli(root, [
     'prepare', goal,
+    '--full',
+    '--type', 'module_feature',
     '--accept', 'Alpha evidence is selected',
     '--accept', 'Beta usage is selected',
     '--path', 'src/beta.ts',
@@ -298,6 +310,7 @@ test('prepare accepts repeatable human flags and canonicalizes unordered discove
 
   assertValidPrepared(prepared);
   assert.equal(prepared.request.task.goal, goal);
+  assert.equal(prepared.request.task.task_type, 'module_feature');
   assert.deepEqual(
     prepared.request.task.acceptance_criteria.map(({ text }) => text),
     ['Alpha evidence is selected', 'Beta usage is selected'],
@@ -312,7 +325,14 @@ test('prepare reports an unavailable auto-index but still compiles with safe fal
   await setupCommand(root);
   await mkdir(join(root, '.primecontext', 'context'), { recursive: true });
   const heldIndexLock = join(root, '.primecontext', 'context', 'index-state.lock');
-  await writeFile(heldIndexLock, 'held by automation RED test\n');
+  await writeFile(heldIndexLock, `${JSON.stringify({
+    schema_version: 'primecontext-lock-v1',
+    pid: process.pid,
+    hostname: hostname(),
+    created_at: new Date().toISOString(),
+    operation: 'automation-test',
+    owner_token: '00000000-0000-4000-8000-000000000001',
+  })}\n`);
 
   const prepared = asPrepared(await prepareGoalCommand(
     root,
@@ -343,9 +363,34 @@ test('zero-config CLI grammar is strict and every success or failure is one mach
   const setup = parseSuccessfulJson(runCli(root, ['setup']), 'setup');
   assert.equal((setup as { status?: unknown; diagnostics?: { status?: unknown } }).status, 'READY');
   assert.equal((setup as { diagnostics?: { status?: unknown } }).diagnostics?.status, 'READY');
+  const compactRun = runCli(root, ['prepare', 'Compile alpha', '--accept', 'Alpha is selected']);
+  const compact = parseSuccessfulJson(compactRun, 'compact prepare') as {
+    schema_version?: unknown;
+    task_id?: unknown;
+    envelope?: ContextEnvelopeV03;
+    receipt_summary?: { receipt_digest?: unknown; decision_counts?: unknown };
+    receipt_ref?: unknown;
+    warnings?: unknown[];
+    next_commands?: unknown[];
+    request?: unknown;
+    receipt?: unknown;
+    output_ceiling_bytes?: unknown;
+  };
+  assert.equal(compact.schema_version, '0.3');
+  assert.equal(typeof compact.task_id, 'string');
+  assert.equal(validateContextEnvelope(compact.envelope).valid, true);
+  assert.equal(typeof compact.receipt_summary?.receipt_digest, 'string');
+  assert.equal(typeof compact.receipt_ref, 'object');
+  assert.ok(Array.isArray(compact.warnings));
+  assert.ok(Array.isArray(compact.next_commands));
+  assert.equal(compact.request, undefined);
+  assert.equal(compact.receipt, undefined);
+  assert.equal(typeof compact.output_ceiling_bytes, 'number');
+  assert.ok(Buffer.byteLength(compactRun.stdout, 'utf8') <= (compact.output_ceiling_bytes as number));
+
   const prepared = asPrepared(parseSuccessfulJson(
-    runCli(root, ['prepare', 'Compile alpha', '--accept', 'Alpha is selected']),
-    'prepare',
+    runCli(root, ['prepare', 'Compile alpha', '--accept', 'Alpha is selected', '--full']),
+    'full prepare',
   ));
   assertValidPrepared(prepared);
 
@@ -359,6 +404,9 @@ test('zero-config CLI grammar is strict and every success or failure is one mach
     ['prepare', 'goal', '--accept'],
     ['prepare', 'goal', '--path'],
     ['prepare', 'goal', '--term'],
+    ['prepare', 'goal', '--type'],
+    ['prepare', 'goal', '--type', 'unsupported'],
+    ['prepare', 'goal', '--full', '--full'],
     ['prepare', 'goal', '--accept', '--term', 'alpha'],
     ['prepare', 'goal', '--accept', ''],
     ['prepare', 'goal', '--accept', 'same', '--accept', 'same'],

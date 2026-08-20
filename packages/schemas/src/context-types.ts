@@ -24,6 +24,10 @@ export interface ContextPlanRequestV03 {
     hints?: { paths?: string[]; symbols?: string[]; terms?: string[] };
   };
   budget: ContextBudgetLimitsV03;
+  progressive_budget?: {
+    soft: ContextBudgetLimitsV03;
+    hard: ContextBudgetLimitsV03;
+  };
   snapshot: ContextSnapshotV03;
   policy_version: string;
   required_sources?: string[];
@@ -50,6 +54,11 @@ export type ContextAuthorityV03 =
   | 'policy' | 'adr' | 'specification' | 'contract_schema' | 'roadmap'
   | 'implementation_note' | 'generated_summary' | 'source_code' | 'test'
   | 'configuration' | 'history' | 'repository_map';
+export type ContextTruncationReasonV03 =
+  | 'CANDIDATE_SET_LIMIT'
+  | 'EXCERPT_BOUND'
+  | 'PROVIDER_RESULT_LIMIT'
+  | 'SOURCE_COLLECTION_LIMIT';
 
 export interface ContextCandidateV03 {
   schema_version: '0.3';
@@ -75,11 +84,13 @@ export interface ContextCandidateV03 {
     criteria_ids: string[];
     graph_distance?: number;
     truncated: boolean;
+    truncation_reasons?: ContextTruncationReasonV03[];
   };
 }
 
 export type ContextEvidenceStatusV03 = 'READY' | 'INSUFFICIENT_EVIDENCE' | 'CONFLICT';
 export type ContextBudgetStatusV03 = 'WITHIN_BUDGET' | 'TRUNCATED' | 'EXHAUSTED';
+export type ContextBudgetTierV03 = 'INITIAL' | 'SOFT' | 'HARD';
 
 export type ContextScoreComponentsV03 = {
   required_source: number;
@@ -101,7 +112,7 @@ export type ContextOmitReasonV03 =
   | 'OMIT_DUPLICATE_CONTENT' | 'OMIT_NO_MATCH' | 'OMIT_LOWER_MARGINAL_COVERAGE'
   | 'OMIT_BUDGET_ITEMS' | 'OMIT_BUDGET_BYTES' | 'OMIT_BUDGET_TOKENS'
   | 'OMIT_STALE_SOURCE' | 'OMIT_UNSAFE_SOURCE' | 'OMIT_INVALID_SOURCE'
-  | 'OMIT_SOURCE_TRUNCATED' | 'OMIT_CONFLICT_REVIEW';
+  | 'OMIT_SOURCE_TRUNCATED' | 'OMIT_CONFLICT_REVIEW' | 'OMIT_SUFFICIENT_EVIDENCE';
 export type ContextDecisionReasonV03 = ContextIncludeReasonV03 | ContextOmitReasonV03;
 
 export interface SelectedContextCandidateV03 extends ContextCandidateV03 {
@@ -115,7 +126,7 @@ export interface ContextConflictV03 {
   conflict_key: string;
   candidate_ids: string[];
   criterion_ids: string[];
-  reason: 'AUTHORITATIVE_SOURCES_DISAGREE';
+  reason: 'AUTHORITATIVE_VARIANTS_REQUIRE_REVIEW' | 'AUTHORITATIVE_SOURCES_DISAGREE';
 }
 
 export interface ContextSourceFailureV03 {
@@ -135,6 +146,7 @@ export interface ContextEnvelopeV03 {
   capsule_digest?: string;
   evidence_status: ContextEvidenceStatusV03;
   budget_status: ContextBudgetStatusV03;
+  budget_tier?: ContextBudgetTierV03;
   budget: ContextBudgetLimitsV03 & {
     used_items: number;
     used_bytes: number;
@@ -143,7 +155,8 @@ export interface ContextEnvelopeV03 {
   items: SelectedContextCandidateV03[];
   criteria_coverage: Array<{
     criterion_id: string;
-    match_mode: 'ANY' | 'ALL';
+    match_mode: 'ANY' | 'ALL' | 'AT_LEAST';
+    minimum_matches?: number;
     required_terms: string[];
     status: 'COVERED' | 'MISSING' | 'CONFLICTED';
     candidate_ids: string[];
@@ -158,6 +171,7 @@ export interface ContextEnvelopeV03 {
     selected_candidates: number;
     omitted_candidates: number;
     source_truncated: boolean;
+    truncation_reasons?: ContextTruncationReasonV03[];
   };
 }
 
@@ -180,6 +194,7 @@ export interface SelectionReceiptV03 {
   selection_digest: string;
   receipt_digest: string;
   policy_version: string;
+  budget_tier?: ContextBudgetTierV03;
   policy_components: ContextScoreComponentsV03;
   decisions: ContextSelectionDecisionV03[];
   duplicate_groups: Array<{ representative_id: string; duplicate_ids: string[] }>;
@@ -211,6 +226,7 @@ export interface ExpansionDecisionV03 {
   previous_selection_digest: string;
   selection_digest: string;
   status: 'ALLOWED' | 'PARTIAL' | 'DENIED';
+  budget_tier?: ContextBudgetTierV03;
   reason_codes: Array<'EVIDENCE_ADDED' | 'NO_NEW_EVIDENCE' | 'HARD_LIMIT_REACHED' | 'STALE_PARENT' | 'DUPLICATE_ONLY'>;
   additions: string[];
   cumulative_budget: ContextEnvelopeV03['budget'];
@@ -260,6 +276,10 @@ export interface AblationResultV03 {
   evidence_status: ContextEvidenceStatusV03;
   missing_criteria_ids: string[];
   missing_required_terms: string[];
+  missing_required_sources?: string[];
+  budget_status?: ContextBudgetStatusV03;
+  source_failures?: ContextSourceFailureV03[];
+  conflicts?: ContextConflictV03[];
   experimental: true;
   causal_claim: 'NONE';
 }

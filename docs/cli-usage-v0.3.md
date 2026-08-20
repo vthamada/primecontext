@@ -6,9 +6,10 @@ the [v0.3 specification](specification/proof-carrying-context-compiler-specifica
 
 ## Status and installation
 
-The v0.3 implementation is developed from an authorized source checkout. Until
-its verification record is complete, examples below describe the frozen CLI
-contract and are not a claim that a published/global binary exists.
+The v0.3 implementation is used from an authorized source checkout. The
+examples below describe the frozen CLI contract, not a claim that a
+published/global binary exists. Consult the dated verification records only for
+the explicit commands and tree state they actually record.
 
 ```bash
 cd /absolute/path/to/primecontext
@@ -42,6 +43,18 @@ stable task ID and the existing `ContextIntent`, attempts the local hybrid
 index once, and transparently uses safe fallback only when the optional index
 is unavailable.
 
+The human command emits a compact result by default. It retains the full
+prompt-facing envelope, but replaces the complete decision ledger with a
+bounded receipt summary, repository-relative receipt reference, warnings,
+missing-evidence fields, and next commands. The serialized result has a 1 MiB
+hard ceiling. Add `--full` to return the complete request and receipt, or
+`--type <task-type>` to override the default `small_code_fix` intent:
+
+```bash
+node /absolute/path/to/primecontext/packages/cli/dist/bin.js prepare \
+  "Review the authentication boundary" --type qa --full
+```
+
 Markdown notes kept inside the repository can be used directly, including an
 Obsidian-edited vault directory. PrimeContext reads the notes through its
 normal screened repository sources and excludes `.obsidian` settings. This
@@ -52,7 +65,7 @@ For agents and advanced automation, the process-JSON interface remains:
 ```bash
 node /absolute/path/to/primecontext/packages/cli/dist/bin.js capabilities
 node /absolute/path/to/primecontext/packages/cli/dist/bin.js doctor
-node /absolute/path/to/primecontext/packages/cli/dist/bin.js context prepare --from tasks/primecontext-intent.json
+node /absolute/path/to/primecontext/packages/cli/dist/bin.js context prepare --from tasks/primecontext-intent.json --compact
 ```
 
 A minimal intent is:
@@ -73,13 +86,17 @@ A minimal intent is:
 ```
 
 `context prepare` collects the live snapshot, derives the conservative budget
-and policy, compiles through the normal v0.3 pipeline, stores the linked plan,
-and returns the generated `request`, `envelope`, `receipt`, and `plan_path`.
+and policy, compiles through the normal v0.3 pipeline, and stores the linked
+plan. With `--compact`, it returns the prompt-facing envelope, bounded warnings
+and missing evidence, a receipt digest/reference, and next commands under a
+1 MiB output ceiling. Without `--compact`, it preserves the complete generated
+`request`, `envelope`, `receipt`, and `plan_path` compatibility response.
 Before any v0.3 context state is used, the command requires the configured
 state directory to have the exact `.gitignore` entry written by `init`.
 `doctor` reports `BLOCKED` and the repair action if that protection is missing.
 Use `--from -` to provide exactly one JSON value over bounded strict UTF-8
-standard input. This is the recommended agent-neutral integration surface.
+standard input. `context prepare --from - --compact` is the recommended
+agent-neutral integration surface.
 
 The advanced `context plan` command below remains available when the caller
 needs to control every request field explicitly.
@@ -96,9 +113,9 @@ node /absolute/path/to/primecontext/packages/cli/dist/bin.js context index
 
 The command accepts no arguments. It safely recollects the bounded allowed
 Markdown/code corpus and builds a new local SQLite/FTS index under
-`.primecontext/context/`. Facts from PrimeContext's internal TypeScript
-structural graph are included only when the local capability is available and
-remains within its limits. It is not the external
+`.primecontext/context/`. PrimeContext's internal TypeScript structural graph
+is collected as a separately freshness-bound optional candidate source; graph
+facts are not stored as FTS rows. It is not the external
 `@colbymchenry/codegraph` package.
 
 The build is full sibling replacement. It does not incrementally update the
@@ -178,9 +195,9 @@ candidates, rereads selected source bytes, and publishes a linked request,
 Success emits a bounded summary containing `task_id`, selection/receipt
 digests, `evidence_status`, `budget_status`, selected count, and plan path.
 `context inspect` returns the validated persisted request, envelope, receipt,
-exact snapshot, selected IDs, missing evidence, conflicts, source outcomes, and
-budget totals. Neither output means that the selected context is semantically
-sufficient or correct.
+exact snapshot, selected IDs, missing evidence, conflicts, recorded source
+failures/truncation, and budget totals. Neither output means that the selected
+context is semantically sufficient or correct.
 
 ## 3. Inspect a published plan
 
