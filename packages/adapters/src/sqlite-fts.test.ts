@@ -289,7 +289,7 @@ sqliteRuntimeTest('resolves Windows DOS short names before validating sensitive 
   assert.equal(rebuilt.index_path, relativePath);
   assert.equal(
     await realpath(join(root, relativePath)),
-    join(root, 'custom-context-state', 'nested', 'context.sqlite'),
+    await realpath(join(root, 'custom-context-state', 'nested', 'context.sqlite')),
   );
 });
 
