@@ -7,6 +7,15 @@ including the accepted [v0.3 consolidation](specification/v0.3-consolidation-spe
 It complements [`SECURITY.md`](../SECURITY.md); it does not weaken the v0.1 or
 v0.2 controls.
 
+The final technical-candidate evidence is layered without rewriting history:
+implementation commit `b6f950cebb8621a99d0442a3d0ce548a286ffb9b`, tree
+`ce0ca3efbbd6764295725bf6800a22c81faec107`, received a complete 56/56
+commit-bound scan with zero findings. Test-only portability follow-up
+`fcdb33495fc0cb186d7e925426b2ddfff3a6d4e0`, tree
+`1e90b5140cab006a5bbabd93a5957ad9596ada74`, changes no executable byte and
+received a complete 1/1 diff scan with zero findings. This later evidence-only
+prose does not claim a self-referential containing commit or scan.
+
 ## 1. Protected assets and security objectives
 
 Assets include repository source and documentation, credentials and personal
@@ -389,7 +398,7 @@ The release-candidate tree must have direct tests/evidence for:
 Testing these controls reduces known risk; it does not turn PrimeContext into a
 sandbox or complete DLP system.
 
-## 7. Working-tree scan provenance
+## 7. Security scan provenance
 
 Discovery scan `417f7eb6-946e-478f-b398-3e9fd029b99a` compared baseline
 `80bf4f08` with frozen snapshot
@@ -544,6 +553,51 @@ directory, lock, temporary file, or database write while preserving safe
 nonexistent suffixes. Core/Schemas passed 149/149; adapter matrices passed with
 zero failures on Node 22/24/25; independent rereview recorded `PASS`.
 
-These changes make the seventh scan pre-fix evidence too. An eighth/final
-post-fix scan remains pending, as do the separate immutable-commit,
-cross-platform, dependency-audit, publication, and production gates.
+These changes make the seventh scan pre-fix evidence too.
+
+The eighth post-fix working-tree scan,
+`4139230d-b5a7-47e2-830b-69387b7c23e3`, was sealed at
+`2026-08-20T22:37:18.903537Z` for snapshot
+`codex-security-snapshot/v1:sha256:1df8c59eabe0d0298c1a997d61060bd5d87421ad8cd5153bb1582ea61263dde3`.
+It completed 56/56 full-file/full-diff reviews with zero findings. Its findings
+and coverage artifacts are sealed by
+`sha256:d6b92b8622518acdc16bdba7f9af97474fd94036ef8c806ea2e62f5b3939830b`
+and
+`sha256:fe896b2cfd676b11e944127ba215d92c4132adea59216b73c3dd57b2da00ac57`.
+This is complete post-remediation working-tree evidence, not immutable proof by
+itself.
+
+The complete commit-bound scan,
+`114d4ae4-5968-4ea2-a792-155f95bf6082`, was sealed at
+`2026-08-20T22:51:34.382952Z` for implementation commit `b6f950ce`, tree
+`ce0ca3efbbd6764295725bf6800a22c81faec107`, and snapshot
+`codex-security-snapshot/v1:sha256:ed75c0c3e54504af8e8d23b321c5c3fab412a5703a28adfe4cec2eea918990a0`.
+It completed 56/56 reviews with zero findings. Its findings and coverage
+artifacts are sealed by
+`sha256:8bc551c3ec9b4ab8d26096f5590566e1ab7730c92a935c3110f4cf53647fe11b`
+and
+`sha256:fdea963c33977947744f96581098c70175966f8d47b1272671e85d0cca5bd1db`.
+
+The test-only diff scan,
+`bd616de7-7b8b-4ce4-bfbb-c90ee68b50d2`, was sealed at
+`2026-08-20T23:11:17.370944Z` for `b6f950ce..fcdb3349` and snapshot
+`codex-security-snapshot/v1:sha256:5af98dd832dbea2ad168871e176ab14775d8912670002ab53ae12c4a883460eb`.
+It completed the sole changed test file (1/1) with zero findings. Its findings
+and coverage artifacts are sealed by
+`sha256:0dc245618b090c16290e886cfcaa2b67f81f61caeb674c01c3bc8a7d7b0f6052`
+and
+`sha256:162671ffdd739ffb0e2d5eab6d766abac80e9d44c1a98d313a250ecfbb3c5d69`.
+The executable tree remains byte-identical to the complete scanned
+implementation commit. The TAC advisory status was `unknown`, so no protected
+advisory-output claim is made. The complete commit-bound scan and the sealed
+test-only diff scan over immutable revisions compose the security evidence for
+exact CI HEAD `fcdb3349`; this later documentation prose is outside that claim.
+
+GitHub Actions run
+[32427175624](https://github.com/vthamada/primecontext/actions/runs/32427175624)
+then passed all four Ubuntu/Windows Node 22.13/24 jobs for `fcdb3349`, including
+the production dependency audit in the Ubuntu Node 24 cell. This closes the
+technical candidate's post-remediation, immutable-code, cross-platform, and
+dependency-audit evidence. Licensing, public security contact, branch
+protection, publication, pilot, benchmark, and product-claim approvals remain
+outside this technical security result.
