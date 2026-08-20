@@ -1,11 +1,17 @@
 import { createHash } from 'node:crypto';
-import type { Stats } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
 import { posix, resolve } from 'node:path';
 import { PrimeContextError } from '@primecontext/core';
 import type * as TypeScript from 'typescript';
-import { NodeFileSystemAdapter, assertNoSymbolicLinkComponents } from './filesystem.js';
+import {
+  NodeFileSystemAdapter,
+  assertNoSymbolicLinkComponents,
+  isConfiguredRepositoryPathExcluded,
+  normalizeConfiguredRepositoryExcludes,
+} from './filesystem.js';
+import { assertPhysicalRepositorySourcePathAllowed } from './physical-path.js';
 import { assertPathInsideRoot, isSensitivePath } from './security.js';
+import { sameRegularFileSnapshot } from './file-snapshot.js';
 import { isSensitiveDocumentContent } from './documents.js';
 import {
   createCooperativeDeadlineV03,
@@ -49,6 +55,10 @@ export const DEFAULT_CODEGRAPH_LIMITS_V03: Readonly<CodeGraphLimitsV03> = Object
 export interface CodeGraphRuntimeV03 {
   loadTypeScript?: () => Promise<unknown>;
   monotonicNow?: MonotonicNowV03;
+}
+
+export interface CodeGraphCollectionOptionsV03 {
+  signal?: AbortSignal;
 }
 
 type TypeScriptModule = typeof TypeScript;
@@ -125,6 +135,9 @@ export interface CodeGraphEdgeV03 {
 
 export interface LocalCodeGraphV03 {
   schema_version: '0.3';
+  toolchain: {
+    typescript_version: string;
+  };
   source_digest: string;
   graph_digest: string;
   binding: CodeGraphBindingV03;
@@ -155,6 +168,11 @@ interface ParsedCodeFile {
   calls: PendingCall[];
 }
 
+interface CodeGraphCandidate {
+  relative_path: string;
+  size_bytes?: number;
+}
+
 interface PendingEdge {
   kind: 'contains' | 'imports' | 'exports';
   fromId: string;
@@ -183,6 +201,11 @@ function ordinalCompare(left: string, right: string): number {
 
 function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
+}
+
+function isValidToolchainVersion(value: unknown): value is string {
+  return typeof value === 'string'
+    && /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,127}$/u.test(value);
 }
 
 function isSafeGraphPath(value: unknown): value is string {
@@ -250,6 +273,12 @@ function resolveGraphBinding(
         'Local CodeGraph source does not match its accepted-source manifest',
       );
     }
+  }
+  if (acceptedSources.length !== files.length) {
+    throw new PrimeContextError(
+      'FRESHNESS_ERROR',
+      'Local CodeGraph omitted an accepted source from the graph',
+    );
   }
   return {
     snapshot: structuredClone(snapshot),
@@ -361,20 +390,11 @@ function asTypeScriptModule(value: unknown): TypeScriptModule {
     || requiredFunctions.some((name) => typeof (value as Record<string, unknown>)[name] !== 'function')
     || typeof (value as Record<string, unknown>).ScriptKind !== 'object'
     || typeof (value as Record<string, unknown>).ScriptTarget !== 'object'
-    || typeof (value as Record<string, unknown>).SyntaxKind !== 'object') {
+    || typeof (value as Record<string, unknown>).SyntaxKind !== 'object'
+    || !isValidToolchainVersion((value as Record<string, unknown>).version)) {
     throw new PrimeContextError('CAPABILITY_ERROR', 'TypeScript CodeGraph capability is unavailable');
   }
   return value as TypeScriptModule;
-}
-
-function sameFileSnapshot(left: Stats, right: Stats): boolean {
-  return left.isFile()
-    && right.isFile()
-    && left.dev === right.dev
-    && left.ino === right.ino
-    && left.size === right.size
-    && left.mtimeMs === right.mtimeMs
-    && left.ctimeMs === right.ctimeMs;
 }
 
 async function readStableCodeBytes(root: string, path: string, maximum: number): Promise<StableCodeRead> {
@@ -390,7 +410,7 @@ async function readStableCodeBytes(root: string, path: string, maximum: number):
     const handle = await open(absolute, 'r');
     try {
       const before = await handle.stat();
-      if (!sameFileSnapshot(pathBefore, before)) {
+      if (!sameRegularFileSnapshot(pathBefore, before)) {
         throw new PrimeContextError('SECURITY_ERROR', 'CodeGraph source changed before its bounded read');
       }
       const buffer = Buffer.alloc(Math.min(maximum + 1, before.size + 1));
@@ -403,7 +423,7 @@ async function readStableCodeBytes(root: string, path: string, maximum: number):
       const after = await handle.stat();
       const pathAfter = await lstat(absolute);
       await assertNoSymbolicLinkComponents(resolvedRoot, path);
-      if (!sameFileSnapshot(before, after) || !sameFileSnapshot(after, pathAfter) || offset !== after.size) {
+      if (!sameRegularFileSnapshot(before, after) || !sameRegularFileSnapshot(after, pathAfter) || offset !== after.size) {
         throw new PrimeContextError('SECURITY_ERROR', 'CodeGraph source changed during its bounded read');
       }
       return offset > maximum
@@ -759,6 +779,12 @@ export function assertValidLocalCodeGraphV03(graph: LocalCodeGraphV03): LocalCod
   if (!Array.isArray(graph.files) || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) {
     throw new PrimeContextError('VALIDATION_ERROR', 'Invalid local CodeGraph collections');
   }
+  if (typeof graph.toolchain !== 'object' || graph.toolchain === null || Array.isArray(graph.toolchain)
+    || Object.keys(graph.toolchain).length !== 1
+    || !Object.hasOwn(graph.toolchain, 'typescript_version')
+    || !isValidToolchainVersion(graph.toolchain.typescript_version)) {
+    throw new PrimeContextError('VALIDATION_ERROR', 'Local CodeGraph toolchain identity is invalid');
+  }
   if (typeof graph.binding !== 'object' || graph.binding === null) {
     throw new PrimeContextError('VALIDATION_ERROR', 'Local CodeGraph binding is invalid');
   }
@@ -823,6 +849,9 @@ export function assertValidLocalCodeGraphV03(graph: LocalCodeGraphV03): LocalCod
     if (acceptedHashByPath.get(file.path) !== file.source_hash) {
       throw new PrimeContextError('FRESHNESS_ERROR', 'Local CodeGraph file is absent from its accepted-source binding');
     }
+  }
+  if (acceptedHashByPath.size !== filePaths.size) {
+    throw new PrimeContextError('FRESHNESS_ERROR', 'Local CodeGraph omitted an accepted source from the graph');
   }
   if (totalSourceBytes !== graph.summary.total_source_bytes) {
     throw new PrimeContextError('VALIDATION_ERROR', 'Local CodeGraph source size does not match its summary');
@@ -890,6 +919,7 @@ export function assertValidLocalCodeGraphV03(graph: LocalCodeGraphV03): LocalCod
 
 export class NodeCodeGraphAdapter {
   private readonly excludes: string[];
+  private readonly configuredExcludes: ReadonlySet<string>;
   private readonly limits: CodeGraphLimitsV03;
   private readonly loadTypeScript?: () => Promise<unknown>;
   private readonly monotonicNow: MonotonicNowV03;
@@ -900,19 +930,63 @@ export class NodeCodeGraphAdapter {
     runtime: CodeGraphRuntimeV03 = {},
   ) {
     this.excludes = [...excludes];
+    this.configuredExcludes = normalizeConfiguredRepositoryExcludes(excludes);
     this.limits = resolveLimits(limits);
     const resolvedRuntime = resolveRuntime(runtime);
     if (resolvedRuntime.loadTypeScript) this.loadTypeScript = resolvedRuntime.loadTypeScript;
     this.monotonicNow = resolvedRuntime.monotonicNow;
   }
 
-  async collect(root: string, collectionBinding?: CodeGraphCollectionBindingV03): Promise<LocalCodeGraphV03> {
-    const assertWithinDeadline = createCooperativeDeadlineV03(
+  async collect(
+    root: string,
+    collectionBinding?: CodeGraphCollectionBindingV03,
+    options: CodeGraphCollectionOptionsV03 = {},
+  ): Promise<LocalCodeGraphV03> {
+    if (typeof options !== 'object' || options === null || Array.isArray(options)
+      || Object.keys(options).some((key) => key !== 'signal')
+      || (options.signal !== undefined && (
+        typeof options.signal !== 'object'
+        || typeof options.signal.aborted !== 'boolean'
+        || typeof options.signal.addEventListener !== 'function'
+      ))) {
+      throw new PrimeContextError('CONFIG_ERROR', 'Invalid CodeGraph collection options');
+    }
+    const assertWithinCooperativeLimits = createCooperativeDeadlineV03(
       this.monotonicNow,
       OPTIONAL_ADAPTER_DEADLINE_MS,
       'CodeGraph',
     );
+    const assertWithinDeadline = (): void => {
+      if (options.signal?.aborted) {
+        throw new PrimeContextError('CAPABILITY_ERROR', 'CodeGraph collection was cancelled cooperatively');
+      }
+      assertWithinCooperativeLimits();
+    };
     assertWithinDeadline();
+    let boundAcceptedSources: CodeGraphAcceptedSourceV03[] | undefined;
+    if (collectionBinding) {
+      assertValidCodeGraphSnapshot(collectionBinding.snapshot);
+      boundAcceptedSources = normalizeAcceptedSources(collectionBinding.accepted_sources);
+      if (boundAcceptedSources.some((source) => (
+        isConfiguredRepositoryPathExcluded(source.path, this.configuredExcludes)
+      ))) {
+        throw new PrimeContextError(
+          'SECURITY_ERROR',
+          'Local CodeGraph accepted-source manifest contains a configured exclusion',
+        );
+      }
+      for (const source of boundAcceptedSources) {
+        assertWithinDeadline();
+        try {
+          await assertPhysicalRepositorySourcePathAllowed(root, source.path, this.configuredExcludes);
+        } catch (error) {
+          if (error instanceof PrimeContextError && error.code === 'IO_ERROR') {
+            throw new PrimeContextError('FRESHNESS_ERROR', 'Local CodeGraph accepted source is no longer available');
+          }
+          throw error;
+        }
+      }
+    }
     let ts: TypeScriptModule;
     try {
       const loaded = await (this.loadTypeScript ? this.loadTypeScript() : import('typescript'));
@@ -923,11 +997,29 @@ export class NodeCodeGraphAdapter {
     }
     assertWithinDeadline();
     const resolvedRoot = resolve(root);
-    const walk = await new NodeFileSystemAdapter(this.excludes).walk(resolvedRoot);
-    assertWithinDeadline();
-    const candidates = walk.paths
-      .filter((entry) => entry.kind === 'file' && CODE_EXTENSIONS.has(posix.extname(entry.relative_path).toLowerCase()))
-      .sort((left, right) => ordinalCompare(left.relative_path, right.relative_path));
+    let candidates: CodeGraphCandidate[];
+    let discoveredPathCount: number;
+    let excludedPathCount: number;
+    let acceptedByPath: ReadonlyMap<string, string> | undefined;
+    if (collectionBinding) {
+      const acceptedSources = boundAcceptedSources!;
+      acceptedByPath = new Map(acceptedSources.map((source) => [source.path, source.source_hash]));
+      candidates = acceptedSources.map((source) => ({ relative_path: source.path }));
+      discoveredPathCount = candidates.length;
+      excludedPathCount = 0;
+    } else {
+      const walk = await new NodeFileSystemAdapter(this.excludes).walk(resolvedRoot);
+      assertWithinDeadline();
+      candidates = walk.paths
+        .filter((entry) => entry.kind === 'file' && CODE_EXTENSIONS.has(posix.extname(entry.relative_path).toLowerCase()))
+        .map((entry) => ({
+          relative_path: entry.relative_path,
+          ...(entry.size_bytes === undefined ? {} : { size_bytes: entry.size_bytes }),
+        }))
+        .sort((left, right) => ordinalCompare(left.relative_path, right.relative_path));
+      discoveredPathCount = walk.paths.length + walk.excluded_path_count;
+      excludedPathCount = walk.excluded_path_count;
+    }
     assertWithinDeadline();
     if (candidates.length > this.limits.maxFiles) {
       throw new PrimeContextError('CAPABILITY_ERROR', 'CodeGraph file count limit exceeded', [
@@ -950,11 +1042,25 @@ export class NodeCodeGraphAdapter {
         continue;
       }
       if ((candidate.size_bytes ?? 0) > this.limits.maxFileBytes) {
+        if (collectionBinding) {
+          throw new PrimeContextError('FRESHNESS_ERROR', 'Local CodeGraph accepted source exceeds its read bound');
+        }
         omittedOversize += 1;
         continue;
       }
-      const read = await readStableCodeBytes(resolvedRoot, candidate.relative_path, this.limits.maxFileBytes);
+      let read: StableCodeRead;
+      try {
+        read = await readStableCodeBytes(resolvedRoot, candidate.relative_path, this.limits.maxFileBytes);
+      } catch (error) {
+        if (collectionBinding && error instanceof PrimeContextError && error.code === 'IO_ERROR') {
+          throw new PrimeContextError('FRESHNESS_ERROR', 'Local CodeGraph accepted source is no longer available');
+        }
+        throw error;
+      }
       if (read.kind === 'oversize') {
+        if (collectionBinding) {
+          throw new PrimeContextError('FRESHNESS_ERROR', 'Local CodeGraph accepted source exceeds its read bound');
+        }
         omittedOversize += 1;
         continue;
       }
@@ -968,12 +1074,21 @@ export class NodeCodeGraphAdapter {
       try {
         content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(read.bytes);
       } catch {
+        if (collectionBinding) {
+          throw new PrimeContextError('FRESHNESS_ERROR', 'Local CodeGraph accepted source is no longer valid UTF-8');
+        }
         omittedParseError += 1;
         continue;
       }
       if (isSensitiveDocumentContent(content)) {
+        if (collectionBinding) {
+          throw new PrimeContextError('SECURITY_ERROR', 'Local CodeGraph accepted source failed safety screening');
+        }
         omittedSensitive += 1;
         continue;
+      }
+      if (acceptedByPath && acceptedByPath.get(candidate.relative_path) !== sha256(read.bytes)) {
+        throw new PrimeContextError('FRESHNESS_ERROR', 'Local CodeGraph accepted source changed after observation');
       }
       const file: CodeGraphFileV03 = {
         id: `CGF-${sha256(candidate.relative_path).slice(7)}`,
@@ -992,6 +1107,9 @@ export class NodeCodeGraphAdapter {
       }
       assertWithinDeadline();
       if (!parsed) {
+        if (collectionBinding) {
+          throw new PrimeContextError('FRESHNESS_ERROR', 'Local CodeGraph accepted source can no longer be parsed');
+        }
         omittedParseError += 1;
         continue;
       }
@@ -1100,8 +1218,8 @@ export class NodeCodeGraphAdapter {
       indexedSourceBytes += file.size_bytes;
     }
     const summary = {
-      discovered_path_count: walk.paths.length + walk.excluded_path_count,
-      excluded_path_count: walk.excluded_path_count,
+      discovered_path_count: discoveredPathCount,
+      excluded_path_count: excludedPathCount,
       candidate_file_count: candidates.length,
       file_count: files.length,
       omitted_oversize_count: omittedOversize,
@@ -1121,6 +1239,7 @@ export class NodeCodeGraphAdapter {
     const binding = resolveGraphBinding(resolvedRoot, sourceDigest, files, collectionBinding);
     const withoutGraphDigest: Omit<LocalCodeGraphV03, 'graph_digest'> = {
       schema_version: '0.3',
+      toolchain: { typescript_version: ts.version },
       source_digest: sourceDigest,
       binding,
       files,

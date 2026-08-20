@@ -176,6 +176,19 @@ function ordinalSortedUnique(values: unknown, path: string, errors: string[]): v
   if (strings.some((item, index) => item !== sorted[index])) errors.push(`${path} must be ordinally sorted`);
 }
 
+function validateTruncationMetadata(
+  value: JsonObject,
+  booleanField: 'truncated' | 'source_truncated',
+  path: string,
+  errors: string[],
+): void {
+  const reasons = value.truncation_reasons;
+  ordinalSortedUnique(reasons, `${path}.truncation_reasons`, errors);
+  if (Array.isArray(reasons) && reasons.length > 0 && value[booleanField] !== true) {
+    errors.push(`${path}.${booleanField} must be true when truncation_reasons are present`);
+  }
+}
+
 function validatePlanCross(value: JsonObject, errors: string[]): void {
   const task = value.task as JsonObject;
   const criteria = task.acceptance_criteria as JsonObject[];
@@ -194,6 +207,16 @@ function validatePlanCross(value: JsonObject, errors: string[]): void {
   ordinalSortedUnique(value.required_sources, '$.required_sources', errors);
   const totalRequiredTerms = criteria.reduce((count, criterion) => count + (Array.isArray(criterion.required_terms) ? criterion.required_terms.length : 0), 0);
   if (totalRequiredTerms > 64) errors.push('$.task.acceptance_criteria contains more than 64 required terms');
+  const progressive = value.progressive_budget as JsonObject | undefined;
+  if (progressive) {
+    const initial = value.budget as JsonObject;
+    const soft = progressive.soft as JsonObject;
+    const hard = progressive.hard as JsonObject;
+    for (const field of ['max_items', 'max_bytes', 'max_estimated_tokens']) {
+      if (Number(initial[field]) > Number(soft[field])) errors.push(`$.budget.${field} must be <= $.progressive_budget.soft.${field}`);
+      if (Number(soft[field]) > Number(hard[field])) errors.push(`$.progressive_budget.soft.${field} must be <= $.progressive_budget.hard.${field}`);
+    }
+  }
 }
 
 function validateCandidateCross(value: JsonObject, errors: string[]): void {
@@ -211,6 +234,7 @@ function validateCandidateCross(value: JsonObject, errors: string[]): void {
   const discovery = value.discovery as JsonObject;
   ordinalSortedUnique(discovery.matched_terms, '$.discovery.matched_terms', errors);
   ordinalSortedUnique(discovery.criteria_ids, '$.discovery.criteria_ids', errors);
+  validateTruncationMetadata(discovery, 'truncated', '$.discovery', errors);
 }
 
 function validateEnvelopeCross(value: JsonObject, errors: string[]): void {
@@ -229,9 +253,25 @@ function validateEnvelopeCross(value: JsonObject, errors: string[]): void {
   const itemIds = items.map((item) => item.id);
   if (new Set(itemIds).size !== itemIds.length) errors.push('$.items ids must be unique');
   const truncationValue = value.truncation as JsonObject;
+  validateTruncationMetadata(truncationValue, 'source_truncated', '$.truncation', errors);
   if (truncationValue.selected_candidates !== items.length) errors.push('$.truncation.selected_candidates must equal items.length');
   if (Number(truncationValue.considered_candidates) !== Number(truncationValue.selected_candidates) + Number(truncationValue.omitted_candidates)) {
     errors.push('$.truncation counts must add up');
+  }
+  const aggregateReasons = new Set(Array.isArray(truncationValue.truncation_reasons)
+    ? truncationValue.truncation_reasons as string[]
+    : []);
+  const selectedReasons = new Set(items.flatMap((item, index) => {
+    const discovery = item.discovery as JsonObject;
+    validateTruncationMetadata(discovery, 'truncated', `$.items[${index}].discovery`, errors);
+    return Array.isArray(discovery.truncation_reasons) ? discovery.truncation_reasons as string[] : [];
+  }));
+  if (items.some((item) => (item.discovery as JsonObject).truncated === true)
+      && truncationValue.source_truncated !== true) {
+    errors.push('$.truncation.source_truncated must include truncated selected items');
+  }
+  if ([...selectedReasons].some((reason) => !aggregateReasons.has(reason))) {
+    errors.push('$.truncation.truncation_reasons must include selected item reasons');
   }
   const coverage = value.criteria_coverage as JsonObject[];
   const coverageIds = coverage.map((criterion) => String(criterion.criterion_id));
@@ -252,9 +292,17 @@ function validateEnvelopeCross(value: JsonObject, errors: string[]): void {
     if (candidateIds.some((id) => !selectedIds.has(id))) {
       errors.push(`$.criteria_coverage[${index}].candidate_ids must reference selected items`);
     }
-    const mechanicallyCovered = requiredTerms.length === 0
-      ? candidateIds.length > 0
-      : criterion.match_mode === 'ALL'
+    if (criterion.match_mode === 'AT_LEAST' && !Number.isSafeInteger(criterion.minimum_matches)) {
+      errors.push(`$.criteria_coverage[${index}].minimum_matches is required for AT_LEAST`);
+    }
+    if (criterion.match_mode !== 'AT_LEAST' && criterion.minimum_matches !== undefined) {
+      errors.push(`$.criteria_coverage[${index}].minimum_matches is only allowed for AT_LEAST`);
+    }
+    const mechanicallyCovered = criterion.match_mode === 'AT_LEAST'
+      ? matchedTerms.length >= Number(criterion.minimum_matches)
+      : requiredTerms.length === 0
+        ? candidateIds.length > 0
+        : criterion.match_mode === 'ALL'
         ? requiredTerms.every((term) => matchedTerms.includes(term))
         : matchedTerms.length > 0;
     if (criterion.status === 'COVERED' && !mechanicallyCovered) {
@@ -281,11 +329,65 @@ function validateReceiptCross(value: JsonObject, errors: string[]): void {
   const ids = decisions.map((decision) => decision.candidate_id);
   if (new Set(ids).size !== ids.length) errors.push('$.decisions candidate ids must be unique');
   const truncationValue = value.truncation as JsonObject;
+  validateTruncationMetadata(truncationValue, 'source_truncated', '$.truncation', errors);
   if (truncationValue.considered_candidates !== decisions.length) errors.push('$.truncation.considered_candidates must equal decisions.length');
   const selected = decisions.filter((decision) => decision.status === 'INCLUDED').length;
   const omitted = decisions.filter((decision) => decision.status === 'OMITTED').length;
   if (truncationValue.selected_candidates !== selected) errors.push('$.truncation.selected_candidates must equal included decisions');
   if (truncationValue.omitted_candidates !== omitted) errors.push('$.truncation.omitted_candidates must equal omitted decisions');
+  for (let index = 0; index < decisions.length; index += 1) {
+    const decision = decisions[index] as JsonObject;
+    const components = decision.score_components as JsonObject;
+    const total = Object.values(components).reduce<number>((sum, component) => sum + Number(component), 0);
+    if (decision.score !== total) errors.push(`$.decisions[${index}].score must equal score_components total`);
+    if (decision.status === 'INCLUDED' && !String(decision.reason).startsWith('INCLUDE_')) {
+      errors.push(`$.decisions[${index}].reason must be an include reason when INCLUDED`);
+    }
+    if (decision.status === 'OMITTED' && !String(decision.reason).startsWith('OMIT_')) {
+      errors.push(`$.decisions[${index}].reason must be an omit reason when OMITTED`);
+    }
+  }
+  const byId = new Map(decisions.map((decision) => [String(decision.candidate_id), decision]));
+  const duplicateIds = new Set<string>();
+  const representativeIds = new Set<string>();
+  for (const [index, groupValue] of (value.duplicate_groups as JsonObject[]).entries()) {
+    const representative = String(groupValue.representative_id);
+    const representativeDecision = byId.get(representative);
+    if (representativeIds.has(representative)) {
+      errors.push(`$.duplicate_groups[${index}].representative_id must be unique`);
+    }
+    representativeIds.add(representative);
+    if (!representativeDecision || representativeDecision.status !== 'INCLUDED') {
+      errors.push(`$.duplicate_groups[${index}].representative_id must reference an INCLUDED decision`);
+    }
+    for (const duplicate of groupValue.duplicate_ids as string[]) {
+      if (duplicate === representative) {
+        errors.push(`$.duplicate_groups[${index}].duplicate_ids must not contain its representative`);
+      }
+      if (duplicateIds.has(duplicate)) errors.push(`$.duplicate_groups[${index}].duplicate_ids must not overlap another group`);
+      duplicateIds.add(duplicate);
+      const decision = byId.get(duplicate);
+      if (!decision || decision.status !== 'OMITTED' || decision.reason !== 'OMIT_DUPLICATE_CONTENT'
+          || decision.duplicate_of !== representative) {
+        errors.push(`$.duplicate_groups[${index}].duplicate_ids must link OMIT_DUPLICATE_CONTENT decisions`);
+      }
+    }
+  }
+  for (const representative of representativeIds) {
+    if (duplicateIds.has(representative)) {
+      errors.push('$.duplicate_groups representatives must not also be duplicate ids');
+    }
+  }
+  for (const [index, decision] of decisions.entries()) {
+    const candidateId = String(decision.candidate_id);
+    const declaresDuplicate = decision.reason === 'OMIT_DUPLICATE_CONTENT' || decision.duplicate_of !== undefined;
+    if (declaresDuplicate && !duplicateIds.has(candidateId)) {
+      errors.push(`$.decisions[${index}] duplicate link must appear in exactly one duplicate group`);
+    }
+    if ((decision.reason === 'OMIT_DUPLICATE_CONTENT') !== (decision.duplicate_of !== undefined)) {
+      errors.push(`$.decisions[${index}].reason and duplicate_of must describe the same duplicate link`);
+    }
+  }
 }
 
 function validateOutcomeCross(value: JsonObject, errors: string[]): void {
@@ -324,6 +426,15 @@ function validateAblationCross(value: JsonObject, errors: string[]): void {
   } else if (value.decision === 'DENIED') {
     if (value.ablated_selection_digest !== undefined) errors.push('$.ablated_selection_digest is not allowed when DENIED');
     if (value.reason === 'NON_MANDATORY_REMOVED') errors.push('$.reason must explain why ablation was denied');
+  }
+  if (value.decision === 'DERIVED' && value.evidence_status === 'READY') {
+    if ((value.missing_criteria_ids as unknown[]).length > 0 || (value.missing_required_terms as unknown[]).length > 0
+        || (Array.isArray(value.missing_required_sources) && value.missing_required_sources.length > 0)
+        || (Array.isArray(value.source_failures) && value.source_failures.length > 0)
+        || (Array.isArray(value.conflicts) && value.conflicts.length > 0)
+        || (value.budget_status !== undefined && value.budget_status !== 'WITHIN_BUDGET')) {
+      errors.push('$.evidence_status cannot be READY while another insufficiency remains');
+    }
   }
 }
 

@@ -1,8 +1,23 @@
 {
   "name": "primecontext-workspace",
   "version": "0.1.0",
+  "description": "Local-first, proof-carrying context engineering infrastructure for coding agents.",
   "private": true,
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vthamada/primecontext.git"
+  },
+  "homepage": "https://github.com/vthamada/primecontext#readme",
+  "bugs": {
+    "url": "https://github.com/vthamada/primecontext/issues"
+  },
+  "keywords": [
+    "context-engineering",
+    "coding-agents",
+    "local-first",
+    "provenance"
+  ],
   "workspaces": [
     "packages/*"
   ],
@@ -13,9 +28,14 @@
     "build": "tsc -b && npm run contracts:generate --workspace @primecontext/schemas",
     "typecheck": "tsc -b --pretty false && npm run contracts:check --workspace @primecontext/schemas",
     "test": "npm run build && node --test packages/*/dist/*.test.js",
-    "check": "npm run typecheck && npm test",
+    "check": "npm run verify",
     "cli": "node packages/cli/dist/bin.js",
-    "demo": "npm run build && node scripts/demo.mjs"
+    "demo": "npm run build && node scripts/demo.mjs",
+    "sample:test": "npm --prefix examples/sample-project test",
+    "docs:links": "node scripts/check-markdown-links.mjs",
+    "package:check": "node scripts/check-package-tarballs.mjs",
+    "capabilities:check": "node scripts/check-prohibited-capabilities.mjs",
+    "verify": "npm run typecheck && npm test && npm run build && npm run sample:test && npm run demo && npm run docs:links && npm run package:check && npm run capabilities:check"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

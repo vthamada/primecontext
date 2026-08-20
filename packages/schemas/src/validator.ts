@@ -386,7 +386,7 @@ export function validateMetricRecord(value: unknown): ValidationResult {
   const errors: string[] = [];
   const obj = objectAt(value, '$', errors);
   if (!obj) return finish(errors);
-  const allowed = ['schema_version', 'task_id', 'recorded_at', 'arm', ...metricNumericFields, 'test_status', 'review_status', 'completion_status', 'estimated_fields'];
+  const allowed = ['schema_version', 'task_id', 'recorded_at', 'arm', ...metricNumericFields, 'test_status', 'review_status', 'completion_status', 'estimated_fields', 'run_environment'];
   rejectUnknown(obj, allowed, '$', errors);
   required(obj, ['schema_version', 'task_id', 'recorded_at'], '$', errors);
   if (obj.schema_version !== '0.1') errors.push('$.schema_version must equal 0.1');
@@ -422,6 +422,31 @@ export function validateMetricRecord(value: unknown): ValidationResult {
           errors.push(`$.estimated_fields[${index}] references ${name}, which must be present as a measurement`);
         }
       });
+    }
+  }
+  if (obj.run_environment !== undefined) {
+    const runEnvironment = objectAt(obj.run_environment, '$.run_environment', errors);
+    if (runEnvironment) {
+      const fields = [
+        'commit', 'worktree_digest', 'agent', 'model', 'reasoning_effort', 'permissions', 'runtime',
+        'lockfile_hash', 'time_limit_ms', 'test_command', 'rubric',
+      ] as const;
+      rejectUnknown(runEnvironment, fields, '$.run_environment', errors);
+      required(runEnvironment, fields, '$.run_environment', errors);
+      for (const field of ['commit', 'agent', 'model', 'reasoning_effort', 'permissions', 'runtime', 'test_command', 'rubric'] as const) {
+        stringField(runEnvironment, field, '$.run_environment', errors, true);
+        const value = runEnvironment[field];
+        const maximum = field === 'test_command' ? 4096 : field === 'commit' ? 128 : 1024;
+        if (typeof value === 'string' && ([...value].length > maximum || /[\u0000-\u001f\u007f-\u009f]/u.test(value))) {
+          errors.push(`$.run_environment.${field} is not a bounded single-line value`);
+        }
+      }
+      for (const field of ['worktree_digest', 'lockfile_hash'] as const) {
+        if (typeof runEnvironment[field] !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(runEnvironment[field])) {
+          errors.push(`$.run_environment.${field} must be a sha256 digest`);
+        }
+      }
+      nonNegativeInt(runEnvironment.time_limit_ms, '$.run_environment.time_limit_ms', errors, true);
     }
   }
   return finish(errors);

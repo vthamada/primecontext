@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { platform, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -7,9 +7,11 @@ import { PrimeContextError } from '@primecontext/core';
 import {
   DEFAULT_DOCUMENT_DISCOVERY_LIMITS,
   NodeDocumentSourceAdapter,
+  NodeFileSystemAdapter,
   NodeSha256Hasher,
   readSafeRepositoryText,
 } from './index.js';
+import { windowsShortNameFor } from './windows-short-name.test-helper.js';
 
 interface ExpectedDocumentSource {
   relative_path: string;
@@ -321,6 +323,268 @@ test('documents containing high-confidence secrets or labelled client PII are om
   }
 });
 
+test('document collection reports a bounded blocked-policy count without disclosing policy paths', async () => {
+  const root = await repositoryFixture();
+  await mkdir(join(root, 'docs'), { recursive: true });
+  await writeFile(join(root, 'SECURITY.md'), '# Security\nAuthorization: Basic dXNlcjpwYXNzd29yZA==\n');
+  await writeFile(join(root, 'CODE_OF_CONDUCT.md'), '# Conduct\nAuthorization: Basic dXNlcjpwYXNzd29yZA==\n');
+  await writeFile(join(root, 'docs', 'private.md'), '# Private\nAuthorization: Basic dXNlcjpwYXNzd29yZA==\n');
+
+  const result = await new NodeDocumentSourceAdapter().collect(root);
+  assert.equal(result.skipped_sensitive_content_count, 3);
+  assert.equal(result.blocked_policy_count, 2);
+  assert.deepEqual(result.blocked_policy_kinds, { operational: 0, security: 1, governance: 1 });
+  assert.equal(JSON.stringify(result).includes('SECURITY.md'), false);
+  assert.equal(JSON.stringify(result).includes('CODE_OF_CONDUCT.md'), false);
+});
+
+test('document collection can audit an opt-in partial repository walk at capacity', async () => {
+  const root = await repositoryFixture();
+  let nested = root;
+  for (let depth = 0; depth < 65; depth += 1) nested = join(nested, 'd');
+  await mkdir(nested, { recursive: true });
+  const adapter = new NodeDocumentSourceAdapter();
+
+  await assert.rejects(() => adapter.collect(root), /depth limit exceeded/i);
+  const partial = await adapter.collect(root, { capacityLimitBehavior: 'truncate' });
+  assert.equal(partial.discovery_truncated, true);
+  assert.deepEqual(partial.discovery_truncation_reasons, ['MAX_DEPTH']);
+  assert.equal((partial.discovery_visited_entry_count ?? 0) > 0, true);
+  assert.equal(partial.discovery_capacity_omitted_entry_count, 1);
+  assert.equal(partial.blocked_policy_count, 1);
+  assert.deepEqual(partial.blocked_policy_kinds, { operational: 1, security: 0, governance: 0 });
+});
+
+test('document collection reuses one accepted safe repository observation', async () => {
+  const root = await repositoryFixture();
+  const observation = await new NodeFileSystemAdapter().walk(
+    root,
+    { capacityLimitBehavior: 'truncate' },
+  );
+  await mkdir(join(root, 'docs'), { recursive: true });
+  await writeFile(join(root, 'docs', 'created-after-observation.md'), '# Later\n');
+
+  const result = await new NodeDocumentSourceAdapter().collect(root, {
+    acceptedRepositoryWalk: observation,
+  });
+
+  assert.equal(result.sources.some((source) => source.relative_path === 'docs/created-after-observation.md'), false);
+  assert.equal(result.discovered_path_count, observation.paths.length);
+  assert.equal(result.blocked_policy_count, 0);
+  assert.deepEqual(result.blocked_policy_kinds, { operational: 0, security: 0, governance: 0 });
+});
+
+test('accepted repository observations reject non-canonical aliases before selection, exclusion, or reads', async () => {
+  const root = await repositoryFixture();
+  await mkdir(join(root, 'docs'), { recursive: true });
+  await mkdir(join(root, 'benchmarks'), { recursive: true });
+  const agentsContent = '# Agent policy\nNONCANONICAL-AGENTS-CONTENT\n';
+  const guideContent = '# Guide\nNONCANONICAL-GUIDE-CONTENT\n';
+  const excludedContent = '# Private benchmark\nNONCANONICAL-EXCLUDED-CONTENT\n';
+  await writeFile(join(root, 'AGENTS.md'), agentsContent);
+  await writeFile(join(root, 'docs', 'guide.md'), guideContent);
+  await writeFile(join(root, 'benchmarks', 'private.md'), excludedContent);
+  const adapter = new NodeDocumentSourceAdapter(['benchmarks']);
+
+  for (const relativePath of [
+    'docs/../AGENTS.md',
+    'docs/./guide.md',
+    'docs//guide.md',
+    'docs/../benchmarks/private.md',
+  ]) {
+    await assert.rejects(
+      () => adapter.collect(root, {
+        acceptedRepositoryWalk: {
+          paths: [{
+            relative_path: relativePath,
+            kind: 'file',
+            size_bytes: Buffer.byteLength(guideContent),
+          }],
+          excluded_path_count: 0,
+          truncated: false,
+          truncation_reasons: [],
+          visited_entry_count: 1,
+          capacity_omitted_entry_count: 0,
+        },
+      }),
+      (error: unknown) => {
+        assert.equal(error instanceof PrimeContextError, true);
+        assert.equal((error as PrimeContextError).code, 'SECURITY_ERROR');
+        const message = (error as Error).message;
+        assert.match(message, /non-canonical/i);
+        assert.equal(message.includes(relativePath), false);
+        assert.equal(message.includes('NONCANONICAL-'), false);
+        return true;
+      },
+      relativePath,
+    );
+  }
+
+  const canonical = await adapter.collect(root, {
+    acceptedRepositoryWalk: {
+      paths: [{
+        relative_path: 'docs/guide.md',
+        kind: 'file',
+        size_bytes: Buffer.byteLength(guideContent),
+      }],
+      excluded_path_count: 0,
+      truncated: false,
+      truncation_reasons: [],
+      visited_entry_count: 1,
+      capacity_omitted_entry_count: 0,
+    },
+  });
+  assert.deepEqual(sourcePaths(canonical), ['docs/guide.md']);
+  assert.equal(canonical.sources[0]?.content, guideContent);
+});
+
+test('accepted repository observations block Windows case and Unicode aliases of configured excludes before reads', {
+  skip: platform() === 'win32' ? false : 'Windows path aliases are case-insensitive',
+}, async () => {
+  const root = await repositoryFixture();
+  await mkdir(join(root, 'docs', 'private'), { recursive: true });
+  await mkdir(join(root, 'docs', 'ı-private'), { recursive: true });
+  const excludedContent = '# Excluded\nDO-NOT-MATERIALIZE-CASE-ALIAS\n';
+  const unicodeExcludedContent = '# Excluded\nDO-NOT-MATERIALIZE-UNICODE-ALIAS\n';
+  const acceptedContent = '# Accepted\nVisible control.\n';
+  const siblingContent = '# Sibling\nPrefix control.\n';
+  const decomposedContent = '# Decomposed\nNormalization control.\n';
+  await mkdir(join(root, 'docs', 'private-sibling'), { recursive: true });
+  await mkdir(join(root, 'docs', 'café'), { recursive: true });
+  await writeFile(join(root, 'docs', 'private', 'hidden.md'), excludedContent);
+  await writeFile(join(root, 'docs', 'ı-private', 'hidden.md'), unicodeExcludedContent);
+  await writeFile(join(root, 'docs', 'private-sibling', 'visible.md'), siblingContent);
+  await writeFile(join(root, 'docs', 'café', 'visible.md'), decomposedContent);
+  await writeFile(join(root, 'docs', 'accepted-case-control.md'), acceptedContent);
+  const adapter = new NodeDocumentSourceAdapter(['docs/private', 'docs/ı-private', 'docs/café']);
+  const observation = (relativePath: string, sizeBytes: number) => ({
+    paths: [{ relative_path: relativePath, kind: 'file' as const, size_bytes: sizeBytes }],
+    excluded_path_count: 0,
+    truncated: false,
+    truncation_reasons: [],
+    visited_entry_count: 1,
+    capacity_omitted_entry_count: 0,
+  });
+
+  for (const [relativePath, content] of [
+    ['docs/private/hidden.md', excludedContent],
+    ['DOCS/private/hidden.md', excludedContent],
+    ['docs/ı-private/hidden.md', unicodeExcludedContent],
+    ['DOCS/I-PRIVATE/hidden.md', unicodeExcludedContent],
+  ] as const) {
+    await assert.rejects(
+      adapter.collect(root, {
+        acceptedRepositoryWalk: observation(relativePath, Buffer.byteLength(content)),
+      }),
+      (error: unknown) => {
+        assert.equal(error instanceof PrimeContextError, true);
+        assert.equal((error as PrimeContextError).code, 'SECURITY_ERROR');
+        assert.doesNotMatch((error as Error).message, /docs|private|hidden|(?:CASE|UNICODE)-ALIAS/i);
+        return true;
+      },
+      relativePath,
+    );
+  }
+
+  for (const [relativePath, content] of [
+    ['docs/private-sibling/visible.md', siblingContent],
+    ['docs/café/visible.md', decomposedContent],
+    ['docs/accepted-case-control.md', acceptedContent],
+  ] as const) {
+    const accepted = await adapter.collect(root, {
+      acceptedRepositoryWalk: observation(relativePath, Buffer.byteLength(content)),
+    });
+    assert.deepEqual(sourcePaths(accepted), [relativePath]);
+    assert.equal(accepted.sources[0]?.content, content);
+  }
+});
+
+test('accepted repository observations resolve Windows DOS short names before blocked-path checks and reads', {
+  skip: platform() === 'win32' ? false : 'Windows DOS short names are platform-specific',
+}, async (t) => {
+  const root = await repositoryFixture();
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  const excluded = '# Excluded\nDOS-SHORT-NAME-EXCLUDED\n';
+  const sensitive = '# Settings\nDOS-SHORT-NAME-SENSITIVE\n';
+  const accepted = '# Accepted\nDOS short-name control.\n';
+  await mkdir(join(root, 'docs', 'private-material'), { recursive: true });
+  await mkdir(join(root, 'docs', '.obsidian'), { recursive: true });
+  await mkdir(join(root, 'docs', 'public-material'), { recursive: true });
+  await writeFile(join(root, 'docs', 'private-material', 'hidden.md'), excluded);
+  await writeFile(join(root, 'docs', '.obsidian', 'hidden.md'), sensitive);
+  await writeFile(join(root, 'docs', 'public-material', 'visible.md'), accepted);
+
+  const excludedShortName = windowsShortNameFor(join(root, 'docs'), 'private-material');
+  const sensitiveShortName = windowsShortNameFor(join(root, 'docs'), '.obsidian');
+  const acceptedShortName = windowsShortNameFor(join(root, 'docs'), 'public-material');
+  if (!excludedShortName || !sensitiveShortName || !acceptedShortName) {
+    t.skip('The test volume does not expose DOS short names');
+    return;
+  }
+
+  const observation = (relativePath: string, content: string) => ({
+    paths: [{ relative_path: relativePath, kind: 'file' as const, size_bytes: Buffer.byteLength(content) }],
+    excluded_path_count: 0,
+    truncated: false,
+    truncation_reasons: [],
+    visited_entry_count: 1,
+    capacity_omitted_entry_count: 0,
+  });
+  const adapter = new NodeDocumentSourceAdapter(['docs/private-material']);
+  for (const [relativePath, content] of [
+    ['docs/private-material/hidden.md', excluded],
+    [`docs/${excludedShortName}/hidden.md`, excluded],
+    ['docs/.obsidian/hidden.md', sensitive],
+    [`docs/${sensitiveShortName}/hidden.md`, sensitive],
+  ] as const) {
+    await assert.rejects(
+      adapter.collect(root, { acceptedRepositoryWalk: observation(relativePath, content) }),
+      (error: unknown) => error instanceof PrimeContextError && error.code === 'SECURITY_ERROR',
+      relativePath,
+    );
+  }
+
+  const acceptedPath = `docs/${acceptedShortName}/visible.md`;
+  const result = await adapter.collect(root, {
+    acceptedRepositoryWalk: observation(acceptedPath, accepted),
+  });
+  assert.deepEqual(sourcePaths(result), [acceptedPath]);
+  assert.equal(result.sources[0]?.content, accepted);
+});
+
+test('a truncated accepted walk reports a sanitized potential operational-policy omission without rewalking', async () => {
+  const root = await repositoryFixture();
+  const readmeContent = '# Readme\nVisible.\n';
+  const omittedPolicyContent = '# Agent policy\nOMITTED-AGENTS-CONTENT\n';
+  await writeFile(join(root, 'README.md'), readmeContent);
+  await writeFile(join(root, 'AGENTS.md'), omittedPolicyContent);
+
+  const result = await new NodeDocumentSourceAdapter().collect(root, {
+    acceptedRepositoryWalk: {
+      paths: [{
+        relative_path: 'README.md',
+        kind: 'file',
+        size_bytes: Buffer.byteLength(readmeContent),
+      }],
+      excluded_path_count: 0,
+      truncated: true,
+      truncation_reasons: ['MAX_ENTRIES'],
+      visited_entry_count: 2,
+      capacity_omitted_entry_count: 1,
+    },
+  });
+
+  assert.deepEqual(sourcePaths(result), ['README.md']);
+  assert.equal(result.discovery_truncated, true);
+  assert.deepEqual(result.discovery_truncation_reasons, ['MAX_ENTRIES']);
+  assert.equal(result.discovery_capacity_omitted_entry_count, 1);
+  assert.equal(result.blocked_policy_count, 1);
+  assert.deepEqual(result.blocked_policy_kinds, { operational: 1, security: 0, governance: 0 });
+  const serialized = JSON.stringify(result);
+  assert.equal(serialized.includes('AGENTS.md'), false);
+  assert.equal(serialized.includes('OMITTED-AGENTS-CONTENT'), false);
+});
+
 test('excessive sensitive-label candidates fail closed within a bounded scan', async () => {
   const root = await repositoryFixture();
   await mkdir(join(root, 'docs'), { recursive: true });
@@ -358,6 +622,64 @@ test('total byte and document count hard limits reject partial collection', asyn
     () => new NodeDocumentSourceAdapter([], { maxDocuments: 1 }).collect(root),
     /SECURITY_ERROR.*(?:document|count|limit)/i,
   );
+});
+
+test('opt-in document-count truncation returns a deterministic audited prefix without reading omissions', async () => {
+  const root = await repositoryFixture();
+  await mkdir(join(root, 'docs'), { recursive: true });
+  await writeFile(join(root, 'README.md'), '# Readme\n');
+  await writeFile(join(root, 'SECURITY.md'), '# Security\nMust remain unread.\n');
+  await writeFile(join(root, 'docs', 'later.md'), '# Later\nMust remain unread.\n');
+  const observation = await new NodeFileSystemAdapter().walk(root, {
+    capacityLimitBehavior: 'truncate',
+  });
+  await unlink(join(root, 'SECURITY.md'));
+  await unlink(join(root, 'docs', 'later.md'));
+
+  const result = await new NodeDocumentSourceAdapter([], { maxDocuments: 1 }).collect(root, {
+    capacityLimitBehavior: 'truncate',
+    acceptedRepositoryWalk: observation,
+  });
+
+  assert.deepEqual(sourcePaths(result), ['README.md']);
+  assert.equal(result.candidate_document_count, 1);
+  assert.equal(result.omitted_document_count, 0);
+  assert.equal(result.capacity_omitted_document_count, 2);
+  assert.equal(result.discovery_truncated, true);
+  assert.deepEqual(result.discovery_truncation_reasons, ['MAX_DOCUMENTS']);
+  assert.equal(result.blocked_policy_count, 1);
+  assert.deepEqual(result.blocked_policy_kinds, { operational: 0, security: 1, governance: 0 });
+  assert.equal(JSON.stringify(result).includes('SECURITY.md'), false);
+  assert.equal(JSON.stringify(result).includes('later.md'), false);
+});
+
+test('opt-in total-byte truncation stops before reading the first over-budget document', async () => {
+  const root = await repositoryFixture();
+  const firstContent = '# Readme\n';
+  await writeFile(join(root, 'README.md'), firstContent);
+  await writeFile(join(root, 'SECURITY.md'), '# Security\nMust remain unread.\n');
+  const observation = await new NodeFileSystemAdapter().walk(root, {
+    capacityLimitBehavior: 'truncate',
+  });
+  await unlink(join(root, 'SECURITY.md'));
+
+  const result = await new NodeDocumentSourceAdapter([], {
+    maxTotalBytes: Buffer.byteLength(firstContent),
+  }).collect(root, {
+    capacityLimitBehavior: 'truncate',
+    acceptedRepositoryWalk: observation,
+  });
+
+  assert.deepEqual(sourcePaths(result), ['README.md']);
+  assert.equal(result.candidate_document_count, 1);
+  assert.equal(result.omitted_document_count, 0);
+  assert.equal(result.capacity_omitted_document_count, 1);
+  assert.equal(result.total_source_bytes, Buffer.byteLength(firstContent));
+  assert.equal(result.discovery_truncated, true);
+  assert.deepEqual(result.discovery_truncation_reasons, ['MAX_TOTAL_BYTES']);
+  assert.equal(result.blocked_policy_count, 1);
+  assert.deepEqual(result.blocked_policy_kinds, { operational: 0, security: 1, governance: 0 });
+  assert.equal(JSON.stringify(result).includes('SECURITY.md'), false);
 });
 
 test('document discovery hard limits are positive and immutable', () => {

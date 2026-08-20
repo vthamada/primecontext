@@ -147,6 +147,30 @@ test('walk enforces a bounded repository depth with a PrimeContext error', async
   );
 });
 
+test('walk can opt into bounded auditable partial results at capacity limits', async () => {
+  const entryRoot = await mkdtemp(join(tmpdir(), 'primecontext-entry-truncation-'));
+  await writeFile(join(entryRoot, 'one.txt'), '1');
+  await writeFile(join(entryRoot, 'two.txt'), '2');
+  const entryLimited = await new NodeFileSystemAdapter([], { maxEntries: 1 }).walk(entryRoot, {
+    capacityLimitBehavior: 'truncate',
+  });
+  assert.equal(entryLimited.truncated, true);
+  assert.deepEqual(entryLimited.truncation_reasons, ['MAX_ENTRIES']);
+  assert.equal(entryLimited.visited_entry_count, 2);
+  assert.equal(entryLimited.capacity_omitted_entry_count >= 1, true);
+  assert.equal(entryLimited.paths.length <= 1, true);
+
+  const depthRoot = await mkdtemp(join(tmpdir(), 'primecontext-depth-truncation-'));
+  await mkdir(join(depthRoot, 'level-one', 'level-two'), { recursive: true });
+  const depthLimited = await new NodeFileSystemAdapter([], { maxDepth: 1 }).walk(depthRoot, {
+    capacityLimitBehavior: 'truncate',
+  });
+  assert.equal(depthLimited.truncated, true);
+  assert.deepEqual(depthLimited.truncation_reasons, ['MAX_DEPTH']);
+  assert.equal(depthLimited.capacity_omitted_entry_count, 1);
+  assert.deepEqual(depthLimited.paths.map((entry) => entry.relative_path), ['level-one']);
+});
+
 test('adapter rejects excessive configured excludes before discovery', () => {
   assert.throws(
     () => new NodeFileSystemAdapter(['generated-one', 'generated-two'], { maxExcludes: 1 }),

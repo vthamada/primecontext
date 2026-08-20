@@ -3,13 +3,28 @@
   "task_id": "BENCH-SAMPLE-001",
   "recorded_at": "2026-08-11T12:10:00.000Z",
   "arm": "B",
+  "run_environment": {
+    "commit": "synthetic-fixture-commit",
+    "worktree_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "agent": "synthetic-agent",
+    "model": "synthetic-model",
+    "reasoning_effort": "fixed",
+    "permissions": "workspace-read-write;network-denied",
+    "runtime": "node=24.0.0;platform=synthetic",
+    "lockfile_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "time_limit_ms": 600000,
+    "test_command": "npm test",
+    "rubric": "synthetic-rubric-v1"
+  },
   "input_tokens": 7000,
   "output_tokens": 2400,
+  "agent_output_tokens": 4300,
   "tool_calls": 11,
   "file_reads": 9,
   "duration_ms": 150000,
   "test_status": "PASS",
   "review_status": "PASS",
   "completion_status": "PASS",
-  "rework_count": 0
+  "rework_count": 0,
+  "estimated_fields": ["agent_output_tokens"]
 }

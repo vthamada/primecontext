@@ -12,11 +12,60 @@ export interface RepositoryDiscoveryLimits {
   maxExcludes: number;
 }
 
+export interface RepositoryWalkOptions {
+  capacityLimitBehavior?: 'error' | 'truncate';
+}
+
+export type RepositoryDiscoveryTruncationReason = 'MAX_ENTRIES' | 'MAX_DEPTH';
+
+export interface RepositoryWalkResult extends WalkResult {
+  truncated: boolean;
+  truncation_reasons: RepositoryDiscoveryTruncationReason[];
+  visited_entry_count: number;
+  capacity_omitted_entry_count: number;
+}
+
 export const DEFAULT_REPOSITORY_DISCOVERY_LIMITS: Readonly<RepositoryDiscoveryLimits> = Object.freeze({
   maxEntries: 100_000,
   maxDepth: 64,
   maxExcludes: 1_024,
 });
+
+function configuredRepositoryPathComparisonKeys(path: string): readonly string[] {
+  const normalized = path.replaceAll('\\', '/');
+  if (process.platform !== 'win32') return [normalized];
+  return [
+    `lower:${normalized.toLowerCase()}`,
+    `upper:${normalized.toUpperCase()}`,
+  ];
+}
+
+export function normalizeConfiguredRepositoryExcludes(
+  additionalExcludes: readonly string[],
+): ReadonlySet<string> {
+  const normalizedExcludes = new Set<string>();
+  for (const exclude of additionalExcludes) {
+    const normalized = exclude.replaceAll('\\', '/').replace(/^\.\//, '').replace(/\/$/, '');
+    if (!normalized) continue;
+    for (const key of configuredRepositoryPathComparisonKeys(normalized)) normalizedExcludes.add(key);
+  }
+  return normalizedExcludes;
+}
+
+export function isConfiguredRepositoryPathExcluded(
+  relativePath: string,
+  configuredExcludes: ReadonlySet<string>,
+): boolean {
+  for (const key of configuredRepositoryPathComparisonKeys(relativePath)) {
+    if (configuredExcludes.has(key)) return true;
+    let separator = key.lastIndexOf('/');
+    while (separator >= 0) {
+      if (configuredExcludes.has(key.slice(0, separator))) return true;
+      separator = key.lastIndexOf('/', separator - 1);
+    }
+  }
+  return false;
+}
 
 function ordinalCompare(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -45,6 +94,17 @@ function resolveDiscoveryLimits(overrides: Partial<RepositoryDiscoveryLimits>): 
     maxDepth: boundedLimit('maxDepth', overrides.maxDepth, 0),
     maxExcludes: boundedLimit('maxExcludes', overrides.maxExcludes, 0),
   };
+}
+
+function resolveWalkOptions(options: RepositoryWalkOptions): Required<RepositoryWalkOptions> {
+  if (typeof options !== 'object' || options === null || Array.isArray(options)
+    || Object.keys(options).some((key) => key !== 'capacityLimitBehavior')
+    || (options.capacityLimitBehavior !== undefined
+      && options.capacityLimitBehavior !== 'error'
+      && options.capacityLimitBehavior !== 'truncate')) {
+    throw new PrimeContextError('CONFIG_ERROR', 'Invalid repository walk options');
+  }
+  return { capacityLimitBehavior: options.capacityLimitBehavior ?? 'error' };
 }
 
 function nodeErrorCode(error: unknown): string | undefined {
@@ -104,37 +164,44 @@ export class NodeFileSystemAdapter implements FileSystemPort {
         [`maximum=${this.limits.maxExcludes}`, `received=${additionalExcludes.length}`],
       );
     }
-    const normalizedExcludes = additionalExcludes
-      .map((path) => path.replaceAll('\\', '/').replace(/^\.\//, '').replace(/\/$/, ''))
-      .filter(Boolean);
-    this.additionalExcludes = new Set(normalizedExcludes);
+    this.additionalExcludes = normalizeConfiguredRepositoryExcludes(additionalExcludes);
   }
 
   private isConfiguredExcluded(relativePath: string): boolean {
-    const normalized = relativePath.replaceAll('\\', '/');
-    if (this.additionalExcludes.has(normalized)) return true;
-    let separator = normalized.lastIndexOf('/');
-    while (separator >= 0) {
-      if (this.additionalExcludes.has(normalized.slice(0, separator))) return true;
-      separator = normalized.lastIndexOf('/', separator - 1);
-    }
-    return false;
+    return isConfiguredRepositoryPathExcluded(relativePath, this.additionalExcludes);
   }
 
-  async walk(root: string): Promise<WalkResult> {
+  async walk(root: string): Promise<WalkResult>;
+  async walk(
+    root: string,
+    options: RepositoryWalkOptions & { capacityLimitBehavior: 'truncate' },
+  ): Promise<RepositoryWalkResult>;
+  async walk(root: string, options: RepositoryWalkOptions): Promise<WalkResult | RepositoryWalkResult>;
+  async walk(root: string, options: RepositoryWalkOptions = {}): Promise<WalkResult | RepositoryWalkResult> {
+    const resolvedOptions = resolveWalkOptions(options);
     const resolvedRoot = resolve(root);
     try {
       await assertNoSymbolicLinkComponents(resolvedRoot);
       const paths: DiscoveredPath[] = [];
       let excludedPathCount = 0;
       let visitedEntryCount = 0;
+      let capacityOmittedEntryCount = 0;
+      let entryLimitReached = false;
+      const truncationReasons = new Set<RepositoryDiscoveryTruncationReason>();
 
       const readEntries = async (absoluteDir: string): Promise<Dirent[]> => {
+        if (entryLimitReached) return [];
         const entries: Dirent[] = [];
         const directory = await opendir(absoluteDir);
         for await (const entry of directory) {
           visitedEntryCount += 1;
           if (visitedEntryCount > this.limits.maxEntries) {
+            if (resolvedOptions.capacityLimitBehavior === 'truncate') {
+              entryLimitReached = true;
+              capacityOmittedEntryCount += 1;
+              truncationReasons.add('MAX_ENTRIES');
+              break;
+            }
             throw new PrimeContextError(
               'SECURITY_ERROR',
               'Repository discovery entry limit exceeded',
@@ -152,6 +219,11 @@ export class NodeFileSystemAdapter implements FileSystemPort {
         for (const entry of entries) {
           const entryDepth = depth + 1;
           if (entryDepth > this.limits.maxDepth) {
+            if (resolvedOptions.capacityLimitBehavior === 'truncate') {
+              capacityOmittedEntryCount += 1;
+              truncationReasons.add('MAX_DEPTH');
+              continue;
+            }
             throw new PrimeContextError(
               'SECURITY_ERROR',
               'Repository discovery depth limit exceeded',
@@ -171,7 +243,7 @@ export class NodeFileSystemAdapter implements FileSystemPort {
           }
           if (stat.isDirectory()) {
             paths.push({ relative_path: relativePath, kind: 'directory' });
-            await visit(absolutePath, entryDepth);
+            if (!entryLimitReached) await visit(absolutePath, entryDepth);
             continue;
           }
           if (stat.isFile()) {
@@ -181,6 +253,17 @@ export class NodeFileSystemAdapter implements FileSystemPort {
       };
 
       await visit(resolvedRoot, 0);
+      if (resolvedOptions.capacityLimitBehavior === 'truncate') {
+        return {
+          paths,
+          excluded_path_count: excludedPathCount,
+          truncated: truncationReasons.size > 0,
+          truncation_reasons: (['MAX_ENTRIES', 'MAX_DEPTH'] as const)
+            .filter((reason) => truncationReasons.has(reason)),
+          visited_entry_count: visitedEntryCount,
+          capacity_omitted_entry_count: capacityOmittedEntryCount,
+        };
+      }
       return { paths, excluded_path_count: excludedPathCount };
     } catch (error) {
       if (error instanceof PrimeContextError) throw error;

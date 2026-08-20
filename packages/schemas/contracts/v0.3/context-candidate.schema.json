@@ -196,6 +196,19 @@
         },
         "truncated": {
           "type": "boolean"
+        },
+        "truncation_reasons": {
+          "type": "array",
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "CANDIDATE_SET_LIMIT",
+              "EXCERPT_BOUND",
+              "PROVIDER_RESULT_LIMIT",
+              "SOURCE_COLLECTION_LIMIT"
+            ]
+          }
         }
       }
     }

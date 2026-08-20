@@ -2,5 +2,9 @@
   "name": "primecontext-sample-project",
   "version": "0.0.0",
   "private": true,
-  "description": "Small repository fixture used to exercise PrimeContext v0.1"
+  "type": "module",
+  "description": "Synthetic repository fixture used to exercise PrimeContext v0.1-v0.3 workflows",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  }
 }

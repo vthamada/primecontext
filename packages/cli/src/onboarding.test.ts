@@ -266,7 +266,7 @@ test('compiled CLI discovers onboarding commands and emits one JSON document on 
   assert.equal(help.stderr, '');
   assert.match(help.stdout, /primecontext capabilities/);
   assert.match(help.stdout, /primecontext doctor/);
-  assert.match(help.stdout, /primecontext context prepare --from <intent\.json\|->/);
+  assert.match(help.stdout, /primecontext context prepare --from <intent\.json\|-> \[--compact\]/);
 
   parseSuccessfulJson(runCli(root, ['capabilities']), 'capabilities');
   parseSuccessfulJson(runCli(root, ['doctor']), 'doctor');
@@ -278,6 +278,28 @@ test('compiled CLI discovers onboarding commands and emits one JSON document on 
     'context prepare file',
   );
   assertPreparedResult(root, prepared, requestedIntent);
+
+  const compactRun = runCli(root, ['context', 'prepare', '--compact', '--from', 'intent.json']);
+  const compact = parseSuccessfulJson(compactRun, 'compact context prepare') as {
+    schema_version?: unknown;
+    task_id?: unknown;
+    envelope?: ContextEnvelopeV03;
+    receipt_summary?: { receipt_digest?: unknown };
+    receipt_ref?: { path?: unknown; json_pointer?: unknown };
+    request?: unknown;
+    receipt?: unknown;
+    output_ceiling_bytes?: unknown;
+  };
+  assert.equal(compact.schema_version, '0.3');
+  assert.equal(compact.task_id, requestedIntent.task_id);
+  assert.equal(validateContextEnvelope(compact.envelope).valid, true);
+  assert.equal(typeof compact.receipt_summary?.receipt_digest, 'string');
+  assert.equal(typeof compact.receipt_ref?.path, 'string');
+  assert.equal(compact.receipt_ref?.json_pointer, '/receipt');
+  assert.equal(compact.request, undefined);
+  assert.equal(compact.receipt, undefined);
+  assert.equal(typeof compact.output_ceiling_bytes, 'number');
+  assert.ok(Buffer.byteLength(compactRun.stdout, 'utf8') <= (compact.output_ceiling_bytes as number));
 });
 
 test('context prepare accepts bounded strict JSON from stdin without contaminating stdout', async (t) => {
@@ -305,12 +327,13 @@ test('generic, Codex, and Claude templates use the same agent-neutral protocol',
     'integrations/generic/AGENT.md',
     'integrations/codex/AGENTS.md.template',
     'integrations/claude-code/CLAUDE.md.template',
+    'docs/agent-integration-v0.3.md',
   ];
   for (const path of instructionPaths) {
     const content = await readFile(join(workspace, path), 'utf8');
     assert.match(content, /<primecontext> capabilities/);
     assert.match(content, /<primecontext> doctor/);
-    assert.match(content, /<primecontext> context prepare --from -/);
+    assert.match(content, /<primecontext> context prepare --from - --compact/);
     assert.match(content, /ContextIntent/);
     assert.doesNotMatch(content, /https?:\/\//i);
   }
@@ -320,7 +343,7 @@ test('generic, Codex, and Claude templates use the same agent-neutral protocol',
     'utf8',
   );
   assert.match(claudeCommand, /ContextIntent/);
-  assert.match(claudeCommand, /<primecontext> context prepare --from -/);
+  assert.match(claudeCommand, /<primecontext> context prepare --from - --compact/);
   assert.doesNotMatch(claudeCommand, /https?:\/\//i);
 
   const capabilities = capabilitiesCommand(workspace);
@@ -379,6 +402,7 @@ test('onboarding CLI grammar is strict and failures remain machine-readable', as
     ['context', 'prepare'],
     ['context', 'prepare', '--from'],
     ['context', 'prepare', '--unknown', 'intent.json'],
+    ['context', 'prepare', '--compact', '--compact', '--from', 'intent.json'],
     ['context', 'prepare', '--from', 'intent.md'],
     ['context', 'prepare', '--from', '-', 'extra'],
   ]) {

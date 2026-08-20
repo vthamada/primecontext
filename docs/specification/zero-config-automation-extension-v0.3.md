@@ -56,9 +56,12 @@ An obsolete or corrupt optional index may be discarded in favor of live safe
 sources; a repository/worktree freshness mismatch in the request or selected
 evidence may not be downgraded to fallback success.
 
-The returned request, envelope, receipt, and plan are exactly those produced by
-the normal `ContextIntent` path. Automation metadata never changes compiler
-policy or proof digests.
+The persisted request, envelope, receipt, and plan are exactly those produced
+by the normal `ContextIntent` path. By default, stdout is the bounded compact
+projection: prompt-facing envelope, bounded warnings/missing evidence, receipt
+summary/reference, next commands, and automation metadata. `--full` returns the
+complete request/envelope/receipt response for explicit inspection. Automation
+metadata never changes compiler policy or proof digests.
 
 ### Repository-local Markdown knowledge vaults
 

@@ -25,6 +25,8 @@ Do not tune Arm B after observing Arm A without recording that intervention. Do 
 Record fields when they are available and attributable:
 
 - input, cached input, and output tokens;
+- agent-facing context/output tokens, measured across the serialized context
+  payload and orchestration overhead rather than only selected excerpts;
 - tool calls and file reads;
 - context expansions;
 - duration;
@@ -33,9 +35,23 @@ Record fields when they are available and attributable:
 - completion status, when the host can report it reliably;
 - rework count.
 
+Each arm may also carry a complete `run_environment` object with commit,
+worktree digest, agent, model, reasoning effort, permissions, runtime,
+dependency-lock hash, time limit, test command, and rubric. Legacy records
+without it remain valid metric observations, but they cannot produce
+`COMPARABLE_EVIDENCE`. Both arms must contain byte-identical values for every
+environment field; the comparator names each mismatch rather than assuming
+parity.
+
 `codegraph_calls` may remain absent or zero in v0.1; its presence in the contract does not authorize or require CodeGraph integration. Measurements outside the v0.1 schema, such as detailed discovery cost or completion notes, belong in a separate review artifact until a versioned contract explicitly adds them.
 
 Every estimate must be named in `estimated_fields`. A missing measurement stays missing; it must not be replaced with zero. Preserve raw provider/tool evidence outside Git when it contains private data, and use sanitized references in review reports.
+
+`agent_output_tokens` is distinct from model `output_tokens` and
+`selected_context_tokens`: it measures the bounded material actually handed to
+the consuming agent, including envelope/protocol overhead. Record the tokenizer
+and counting boundary in the pre-registered protocol; mark it estimated when
+the host cannot provide an exact count.
 
 Record each validated arm through the CLI:
 
@@ -55,7 +71,9 @@ The comparison is interpreted conservatively:
 | Arm B test, review, or reported completion is `FAIL` | `QUALITY_REGRESSION` |
 | Arm A test, review, or reported completion is `FAIL` | `INSUFFICIENT_QUALITY_EVIDENCE` |
 | Either test/review status is not `PASS`, or any reported completion is `UNKNOWN` | `INSUFFICIENT_QUALITY_EVIDENCE` |
-| Both arms pass test/review, no reported completion blocks comparison, and they share measurable fields | `COMPARABLE_EVIDENCE` |
+| Either arm omits `run_environment`, or any environment field differs | `INSUFFICIENT_ENVIRONMENT_EVIDENCE` |
+| Both arms have no shared numeric measurement | `INSUFFICIENT_MEASUREMENT_EVIDENCE` |
+| Both arms pass quality, have an exactly matched environment, and share measurable fields | `COMPARABLE_EVIDENCE` |
 
 `COMPARABLE_EVIDENCE` means only that raw deltas can be reviewed. It is not an optimization verdict. A pair with no shared numeric measurement is insufficient efficiency evidence even when both quality statuses are PASS.
 
@@ -69,7 +87,7 @@ Test counts alone do not establish parity. Review should consider acceptance cri
 primecontext benchmark --a evidence/arm-a.json --b evidence/arm-b.json
 ```
 
-Deltas are reported as `B - A`. For cost-like metrics, a negative delta may be directionally lower, but no field is favorable in isolation. Report the raw values, delta sign convention, quality result, estimate labels, environment, task identity, and known confounders together.
+Deltas are reported as `B - A`. For cost-like metrics, a negative delta may be directionally lower, but no field is favorable in isolation. The output independently reports `quality_gate`, `environment_gate`, `measurement_gate`, and exact environment mismatches. Report the raw values, delta sign convention, all gates, estimate labels, environment, task identity, and known confounders together.
 
 The JSON files under `benchmarks/fixtures/` are deterministic test fixtures. They are not empirical evidence and must never be cited as product performance.
 
@@ -87,3 +105,7 @@ Any future external claim requires, at minimum:
 6. review for privacy, security, and misleading comparisons.
 
 Until those gates are satisfied, use language such as “this run produced these raw deltas.” Do not use “saves,” “improves,” “faster,” “more efficient,” or equivalent superiority language.
+
+A [self-hosted v0.3 consolidation protocol](../benchmarks/protocols/primecontext-v0.3-consolidation.md)
+is checked in as a draft for human approval. It has not been executed and is
+not benchmark evidence.

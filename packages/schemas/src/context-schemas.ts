@@ -9,11 +9,18 @@ export const contextAuthorities = [
 export const contextFreshnessValues = ['live', 'snapshot', 'unknown'] as const;
 export const contextEvidenceStatuses = ['READY', 'INSUFFICIENT_EVIDENCE', 'CONFLICT'] as const;
 export const contextBudgetStatuses = ['WITHIN_BUDGET', 'TRUNCATED', 'EXHAUSTED'] as const;
+export const contextBudgetTiers = ['INITIAL', 'SOFT', 'HARD'] as const;
+export const contextTruncationReasons = [
+  'CANDIDATE_SET_LIMIT',
+  'EXCERPT_BOUND',
+  'PROVIDER_RESULT_LIMIT',
+  'SOURCE_COLLECTION_LIMIT',
+] as const;
 export const contextDecisionReasons = [
   'INCLUDE_REQUIRED_SOURCE', 'INCLUDE_APPLICABLE_POLICY', 'INCLUDE_CRITERION_COVERAGE', 'INCLUDE_RELEVANCE',
   'OMIT_DUPLICATE_CONTENT', 'OMIT_NO_MATCH', 'OMIT_LOWER_MARGINAL_COVERAGE', 'OMIT_BUDGET_ITEMS',
   'OMIT_BUDGET_BYTES', 'OMIT_BUDGET_TOKENS', 'OMIT_STALE_SOURCE', 'OMIT_UNSAFE_SOURCE',
-  'OMIT_INVALID_SOURCE', 'OMIT_SOURCE_TRUNCATED', 'OMIT_CONFLICT_REVIEW',
+  'OMIT_INVALID_SOURCE', 'OMIT_SOURCE_TRUNCATED', 'OMIT_CONFLICT_REVIEW', 'OMIT_SUFFICIENT_EVIDENCE',
 ] as const;
 
 const nonEmpty = { type: 'string', minLength: 1 } as const;
@@ -30,6 +37,10 @@ const stringSet = { type: 'array', maxItems: 128, uniqueItems: true, items: boun
 const pathSet = { type: 'array', maxItems: 128, uniqueItems: true, items: repositoryPath } as const;
 const idSet = { type: 'array', maxItems: 128, uniqueItems: true, items: stableId } as const;
 const hashSet = { type: 'array', maxItems: 2048, uniqueItems: true, items: hash } as const;
+const truncationReasonSet = {
+  type: 'array', maxItems: contextTruncationReasons.length, uniqueItems: true,
+  items: { enum: contextTruncationReasons },
+} as const;
 
 const snapshot = {
   type: 'object', additionalProperties: false, required: ['repository_id', 'worktree_digest'],
@@ -87,6 +98,7 @@ const candidate = {
       properties: {
         matched_terms: stringSet, criteria_ids: idSet,
         graph_distance: { type: 'integer', minimum: 0, maximum: 5 }, truncated: { type: 'boolean' },
+        truncation_reasons: truncationReasonSet,
       },
     },
   },
@@ -110,7 +122,8 @@ const conflict = {
   properties: {
     conflict_key: { type: 'string', pattern: '^conflict-[0-9a-f]{64}$' },
     candidate_ids: { type: 'array', minItems: 2, maxItems: 128, uniqueItems: true, items: hash },
-    criterion_ids: idSet, reason: { const: 'AUTHORITATIVE_SOURCES_DISAGREE' },
+    criterion_ids: idSet,
+    reason: { enum: ['AUTHORITATIVE_VARIANTS_REQUIRE_REVIEW', 'AUTHORITATIVE_SOURCES_DISAGREE'] },
   },
 } as const;
 
@@ -122,6 +135,7 @@ const truncation = {
     selected_candidates: { type: 'integer', minimum: 0, maximum: 128 },
     omitted_candidates: { type: 'integer', minimum: 0, maximum: 2048 },
     source_truncated: { type: 'boolean' },
+    truncation_reasons: truncationReasonSet,
   },
 } as const;
 
@@ -156,7 +170,12 @@ export const contextPlanRequestSchema = {
         },
       },
     },
-    budget, snapshot, policy_version: { ...bounded, maxLength: 128 }, required_sources: pathSet, capsule_digest: hash,
+    budget,
+    progressive_budget: {
+      type: 'object', additionalProperties: false, required: ['soft', 'hard'],
+      properties: { soft: budget, hard: budget },
+    },
+    snapshot, policy_version: { ...bounded, maxLength: 128 }, required_sources: pathSet, capsule_digest: hash,
   },
 } as const;
 
@@ -228,6 +247,7 @@ export const contextEnvelopeSchema = {
     schema_version: { const: '0.3' }, task_id: taskId, request_digest: hash, selection_digest: hash,
     policy_version: { ...bounded, maxLength: 128 }, snapshot, capsule_digest: hash,
     evidence_status: { enum: contextEvidenceStatuses }, budget_status: { enum: contextBudgetStatuses },
+    budget_tier: { enum: contextBudgetTiers },
     budget: {
       ...budget,
       required: [...budget.required, 'used_items', 'used_bytes', 'used_estimated_tokens'],
@@ -242,7 +262,8 @@ export const contextEnvelopeSchema = {
         type: 'object', additionalProperties: false,
         required: ['criterion_id', 'match_mode', 'required_terms', 'status', 'candidate_ids', 'matched_terms'],
         properties: {
-          criterion_id: stableId, match_mode: { enum: ['ANY', 'ALL'] }, required_terms: stringSet,
+          criterion_id: stableId, match_mode: { enum: ['ANY', 'ALL', 'AT_LEAST'] },
+          minimum_matches: { type: 'integer', minimum: 1, maximum: 64 }, required_terms: stringSet,
           status: { enum: ['COVERED', 'MISSING', 'CONFLICTED'] },
           candidate_ids: { type: 'array', maxItems: 128, uniqueItems: true, items: hash }, matched_terms: stringSet,
         },
@@ -263,7 +284,8 @@ export const selectionReceiptSchema = {
   ],
   properties: {
     schema_version: { const: '0.3' }, task_id: taskId, request_digest: hash, selection_digest: hash,
-    receipt_digest: hash, policy_version: { ...bounded, maxLength: 128 }, policy_components: scoreComponents,
+    receipt_digest: hash, policy_version: { ...bounded, maxLength: 128 },
+    budget_tier: { enum: contextBudgetTiers }, policy_components: scoreComponents,
     decisions: {
       type: 'array', maxItems: 2048, items: {
         type: 'object', additionalProperties: false,
@@ -314,7 +336,7 @@ export const expansionDecisionSchema = {
   ],
   properties: {
     schema_version: { const: '0.3' }, task_id: taskId, previous_selection_digest: hash, selection_digest: hash,
-    status: { enum: ['ALLOWED', 'PARTIAL', 'DENIED'] },
+    status: { enum: ['ALLOWED', 'PARTIAL', 'DENIED'] }, budget_tier: { enum: contextBudgetTiers },
     reason_codes: { type: 'array', minItems: 1, maxItems: 8, uniqueItems: true, items: { enum: ['EVIDENCE_ADDED', 'NO_NEW_EVIDENCE', 'HARD_LIMIT_REACHED', 'STALE_PARENT', 'DUPLICATE_ONLY'] } },
     additions: { ...hashSet, maxItems: 64 },
     cumulative_budget: {
@@ -383,7 +405,10 @@ export const ablationResultSchema = {
     removed_candidate_id: hash, decision: { enum: ['DERIVED', 'DENIED'] },
     reason: { enum: ['NON_MANDATORY_REMOVED', 'MANDATORY_CANDIDATE', 'CANDIDATE_NOT_SELECTED'] },
     evidence_status: { enum: contextEvidenceStatuses }, missing_criteria_ids: idSet,
-    missing_required_terms: stringSet, experimental: { const: true }, causal_claim: { const: 'NONE' },
+    missing_required_terms: stringSet, missing_required_sources: pathSet,
+    budget_status: { enum: contextBudgetStatuses }, source_failures: contextSourceFailuresSchema,
+    conflicts: { type: 'array', maxItems: 128, items: conflict },
+    experimental: { const: true }, causal_claim: { const: 'NONE' },
   },
 } as const;
 

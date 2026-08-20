@@ -48,18 +48,63 @@ test('accepts a valid Semantic Repo Map', () => {
   assert.equal(result.valid, true);
 });
 
+test('keeps RepoModule roles above the context excerpt limit contract-valid', () => {
+  const result = validateRepoMap({
+    schema_version: '0.1', generated_at: new Date().toISOString(),
+    repository: { root: '/tmp/project', name: 'project' },
+    modules: [{
+      id: 'workspace_package:project', path: '.', kind: 'workspace_package',
+      role: 'x'.repeat((32 * 1024) + 1), evidence: ['package.json description'],
+    }],
+    summary: { module_count: 1, discovered_path_count: 1, excluded_path_count: 0 },
+  });
+  assert.equal(result.valid, true);
+});
+
 test('requires estimated metric fields to be explicitly labeled', () => {
   const valid = validateMetricRecord({
     schema_version: '0.1', task_id: 'PROP-014', recorded_at: new Date().toISOString(),
-    input_tokens: 1200, estimated_fields: ['input_tokens'], test_status: 'PASS',
+    input_tokens: 1200, agent_output_tokens: 450,
+    estimated_fields: ['input_tokens', 'agent_output_tokens'], test_status: 'PASS',
   });
   assert.equal(valid.valid, true);
+  const metricProperties = metricRecordSchema.properties as Record<string, unknown>;
+  assert.ok(Object.hasOwn(metricProperties, 'agent_output_tokens'));
+  assert.ok((metricRecordSchema.properties.estimated_fields.items.enum as readonly string[])
+    .includes('agent_output_tokens'));
 
   const invalid = validateMetricRecord({
     schema_version: '0.1', task_id: 'PROP-014', recorded_at: new Date().toISOString(),
     estimated_fields: ['not_a_metric'],
   });
   assert.equal(invalid.valid, false);
+});
+
+test('accepts a complete optional metric run environment and rejects incomparable partial records', () => {
+  const run_environment = {
+    commit: '80bf4f08b6da7b74368b105215cc7a7d91f17629',
+    worktree_digest: `sha256:${'a'.repeat(64)}`,
+    agent: 'codex', model: 'gpt-5', reasoning_effort: 'high', permissions: 'workspace-write',
+    runtime: 'node-v22.13.1', lockfile_hash: `sha256:${'b'.repeat(64)}`, time_limit_ms: 120000,
+    test_command: 'npm test', rubric: 'rubric-v1',
+  };
+  assert.equal(validateMetricRecord({
+    schema_version: '0.1', task_id: 'PROP-014', recorded_at: new Date().toISOString(), run_environment,
+  }).valid, true);
+  assert.equal(validateMetricRecord({
+    schema_version: '0.1', task_id: 'PROP-014', recorded_at: new Date().toISOString(),
+    run_environment: { ...run_environment, rubric: undefined },
+  }).valid, false);
+  assert.equal(validateMetricRecord({
+    schema_version: '0.1', task_id: 'PROP-014', recorded_at: new Date().toISOString(),
+    run_environment: { ...run_environment, lockfile_hash: 'not-a-hash' },
+  }).valid, false);
+  const zeroTimeLimit = validateMetricRecord({
+    schema_version: '0.1', task_id: 'PROP-014', recorded_at: new Date().toISOString(),
+    run_environment: { ...run_environment, time_limit_ms: 0 },
+  });
+  assert.equal(zeroTimeLimit.valid, false);
+  assert.match(zeroTimeLimit.errors.join('\n'), /time_limit_ms.*positive/i);
 });
 
 test('rejects integers that cannot round-trip safely through the JavaScript runtime', () => {

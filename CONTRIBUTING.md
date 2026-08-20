@@ -13,8 +13,19 @@ Before proposing a feature:
 Run before submitting changes:
 
 ```bash
-npm run check
+npm run typecheck
+npm test
 npm run build
+npm run sample:test
+npm run demo
+npm run docs:links
+npm run package:check
+npm run capabilities:check
 ```
 
 Architecture or contract changes should include an ADR or update an existing ADR.
+
+Use a synthetic disposable fixture for bug reports and tests. Never commit
+generated `.primecontext` state, private repository content, customer data,
+credentials, or raw security evidence. See [`SUPPORT.md`](SUPPORT.md) and
+[`SECURITY.md`](SECURITY.md) before opening an issue.

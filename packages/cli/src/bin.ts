@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { PrimeContextError } from '@primecontext/core';
-import { documentAuthorities } from '@primecontext/schemas';
+import { documentAuthorities, taskTypes } from '@primecontext/schemas';
 import {
   benchmarkCommand,
   handoffValidateCommand,
@@ -31,6 +31,8 @@ import {
   doctorCommand,
 } from './onboarding.js';
 import {
+  compactContextPrepareResult,
+  compactPrepareResult,
   prepareGoalCommand,
   setupCommand,
   type PrepareGoalOptionsV03,
@@ -58,6 +60,28 @@ function parseRequiredFlags(args: string[], requiredFlags: readonly string[]): R
   }
   for (const flag of requiredFlags) if (!Object.hasOwn(values, flag)) usageError(`Missing required flag: ${flag}`);
   return values;
+}
+
+function parseContextPrepareArguments(args: string[]): { from: string; compact: boolean } {
+  let from: string | undefined;
+  let compact = false;
+  for (let index = 0; index < args.length;) {
+    const flag = args[index] as string;
+    if (flag === '--compact') {
+      if (compact) usageError('Duplicate flag: --compact');
+      compact = true;
+      index += 1;
+      continue;
+    }
+    if (flag !== '--from') usageError(`Unknown flag: ${flag}`);
+    if (from !== undefined) usageError('Duplicate flag: --from');
+    const value = args[index + 1];
+    if (!value || value.startsWith('--')) usageError('--from requires a value');
+    from = value;
+    index += 2;
+  }
+  if (from === undefined) usageError('Missing required flag: --from');
+  return { from, compact };
 }
 
 function parseDocsSearchArguments(args: string[]): { query: string; options: DocsSearchOptions } {
@@ -96,7 +120,9 @@ function parseDocsSearchArguments(args: string[]): { query: string; options: Doc
   return { query, options };
 }
 
-function parseHumanPrepareArguments(args: string[]): { goal: string; options: PrepareGoalOptionsV03 } {
+function parseHumanPrepareArguments(
+  args: string[],
+): { goal: string; options: PrepareGoalOptionsV03; full: boolean } {
   const [goal, ...flagArguments] = args;
   if (!goal || goal.trim().length === 0 || goal.startsWith('--')) {
     usageError('prepare requires one non-empty <goal> before flags');
@@ -104,13 +130,31 @@ function parseHumanPrepareArguments(args: string[]): { goal: string; options: Pr
   const values: Record<'--accept' | '--path' | '--term', string[]> = {
     '--accept': [], '--path': [], '--term': [],
   };
-  for (let index = 0; index < flagArguments.length; index += 2) {
-    const flag = flagArguments[index] as keyof typeof values;
+  let full = false;
+  let taskType: PrepareGoalOptionsV03['task_type'];
+  for (let index = 0; index < flagArguments.length;) {
+    const flag = flagArguments[index] as string;
+    if (flag === '--full') {
+      if (full) usageError('Duplicate flag: --full');
+      full = true;
+      index += 1;
+      continue;
+    }
     const value = flagArguments[index + 1];
-    if (!Object.hasOwn(values, flag)) usageError(`Unknown flag: ${String(flag)}`);
+    if (flag === '--type') {
+      if (taskType !== undefined) usageError('Duplicate flag: --type');
+      if (!value || value.startsWith('--')) usageError('--type requires a value');
+      if (!(taskTypes as readonly string[]).includes(value)) usageError(`--type is invalid: ${value}`);
+      taskType = value as NonNullable<PrepareGoalOptionsV03['task_type']>;
+      index += 2;
+      continue;
+    }
+    if (!Object.hasOwn(values, flag)) usageError(`Unknown flag: ${flag}`);
     if (!value || value.trim().length === 0 || value.startsWith('--')) usageError(`${flag} requires a value`);
-    if (values[flag].includes(value)) usageError(`Duplicate ${flag} value: ${value}`);
-    values[flag].push(value);
+    const repeatable = flag as keyof typeof values;
+    if (values[repeatable].includes(value)) usageError(`Duplicate ${flag} value: ${value}`);
+    values[repeatable].push(value);
+    index += 2;
   }
   return {
     goal,
@@ -118,7 +162,9 @@ function parseHumanPrepareArguments(args: string[]): { goal: string; options: Pr
       ...(values['--accept'].length ? { acceptance: values['--accept'] } : {}),
       ...(values['--path'].length ? { paths: values['--path'] } : {}),
       ...(values['--term'].length ? { terms: values['--term'] } : {}),
+      ...(taskType ? { task_type: taskType } : {}),
     },
+    full,
   };
 }
 
@@ -127,14 +173,14 @@ function usage(): string {
     'PrimeContext source checkout (v0.1 foundations + v0.2 retrieval + v0.3 context compiler)',
     '  primecontext init',
     '  primecontext setup',
-    '  primecontext prepare <goal> [--accept <criterion>]... [--path <path>]... [--term <term>]...',
+    '  primecontext prepare <goal> [--type <task-type>] [--accept <criterion>]... [--path <path>]... [--term <term>]... [--full]',
     '  primecontext capabilities',
     '  primecontext doctor',
     '  primecontext map',
     '  primecontext docs index',
     '  primecontext docs search <query> [--limit <1-50>] [--authority <authority>] [--module <module>] [--topic <topic>]',
     '  primecontext context index',
-    '  primecontext context prepare --from <intent.json|->',
+    '  primecontext context prepare --from <intent.json|-> [--compact]',
     '  primecontext context plan --from <request.json>',
     '  primecontext context inspect <task-id>',
     '  primecontext context expand <task-id> --from <request.json>',
@@ -158,7 +204,8 @@ async function main(): Promise<void> {
     case 'setup': requireNoArguments(command, args); result = await setupCommand(root); break;
     case 'prepare': {
       const parsed = parseHumanPrepareArguments(args);
-      result = await prepareGoalCommand(root, parsed.goal, parsed.options);
+      const prepared = await prepareGoalCommand(root, parsed.goal, parsed.options);
+      result = parsed.full ? prepared : compactPrepareResult(prepared);
       break;
     }
     case 'capabilities': requireNoArguments(command, args); result = capabilitiesCommand(root); break;
@@ -184,8 +231,9 @@ async function main(): Promise<void> {
         requireNoArguments('context index', contextArgs);
         result = await contextIndexCommand(root);
       } else if (subcommand === 'prepare') {
-        const flags = parseRequiredFlags(contextArgs, ['--from']);
-        result = await contextPrepareCommand(root, flags['--from'] as string);
+        const parsed = parseContextPrepareArguments(contextArgs);
+        const prepared = await contextPrepareCommand(root, parsed.from);
+        result = parsed.compact ? compactContextPrepareResult(prepared) : prepared;
       } else if (subcommand === 'plan') {
         const flags = parseRequiredFlags(contextArgs, ['--from']);
         result = await contextPlanCommand(root, flags['--from'] as string);

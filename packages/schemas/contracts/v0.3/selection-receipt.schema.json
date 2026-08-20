@@ -44,6 +44,13 @@
       "minLength": 1,
       "maxLength": 128
     },
+    "budget_tier": {
+      "enum": [
+        "INITIAL",
+        "SOFT",
+        "HARD"
+      ]
+    },
     "policy_components": {
       "type": "object",
       "additionalProperties": false,
@@ -155,7 +162,8 @@
               "OMIT_UNSAFE_SOURCE",
               "OMIT_INVALID_SOURCE",
               "OMIT_SOURCE_TRUNCATED",
-              "OMIT_CONFLICT_REVIEW"
+              "OMIT_CONFLICT_REVIEW",
+              "OMIT_SUFFICIENT_EVIDENCE"
             ]
           },
           "mandatory": {
@@ -328,7 +336,10 @@
             }
           },
           "reason": {
-            "const": "AUTHORITATIVE_SOURCES_DISAGREE"
+            "enum": [
+              "AUTHORITATIVE_VARIANTS_REQUIRE_REVIEW",
+              "AUTHORITATIVE_SOURCES_DISAGREE"
+            ]
           }
         }
       }
@@ -401,6 +412,19 @@
         },
         "source_truncated": {
           "type": "boolean"
+        },
+        "truncation_reasons": {
+          "type": "array",
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "CANDIDATE_SET_LIMIT",
+              "EXCERPT_BOUND",
+              "PROVIDER_RESULT_LIMIT",
+              "SOURCE_COLLECTION_LIMIT"
+            ]
+          }
         }
       }
     }

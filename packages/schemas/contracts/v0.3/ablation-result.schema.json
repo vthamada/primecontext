@@ -79,6 +79,112 @@
         "maxLength": 1024
       }
     },
+    "missing_required_sources": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024,
+        "pattern": "^(?!/)(?!.*\\\\)(?!.*:)(?!.*[<>\"|?*])(?!.*//)(?!\\.{1,2}(?:/|$))(?!.*\\/\\.{1,2}(?:/|$))(?!.*(?:^|/)(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])[ .]*(?:\\.|/|$))(?!.*[. ](?:/|$))[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+      }
+    },
+    "budget_status": {
+      "enum": [
+        "WITHIN_BUDGET",
+        "TRUNCATED",
+        "EXHAUSTED"
+      ]
+    },
+    "source_failures": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "provider",
+          "code",
+          "message",
+          "security_control"
+        ],
+        "properties": {
+          "provider": {
+            "enum": [
+              "filesystem",
+              "documents",
+              "repo_map",
+              "git",
+              "fts",
+              "codegraph"
+            ]
+          },
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+          },
+          "security_control": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "conflicts": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "conflict_key",
+          "candidate_ids",
+          "criterion_ids",
+          "reason"
+        ],
+        "properties": {
+          "conflict_key": {
+            "type": "string",
+            "pattern": "^conflict-[0-9a-f]{64}$"
+          },
+          "candidate_ids": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 128,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          },
+          "criterion_ids": {
+            "type": "array",
+            "maxItems": 128,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            }
+          },
+          "reason": {
+            "enum": [
+              "AUTHORITATIVE_VARIANTS_REQUIRE_REVIEW",
+              "AUTHORITATIVE_SOURCES_DISAGREE"
+            ]
+          }
+        }
+      }
+    },
     "experimental": {
       "const": true
     },

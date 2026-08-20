@@ -45,6 +45,10 @@ The hybrid index:
   records support state, and never loads a dynamic extension;
 - accepts no SQL or FTS syntax from the user; normalized literal terms and
   bound values are the only query inputs;
+- validates schema, integrity, toolchain, metadata, source rows, screened
+  content, FTS equivalence, digest, final MATCH, and bounded hit materialization
+  inside one SQLite read transaction, so every returned hit belongs to the
+  snapshot that passed validation;
 - is replaceable behind a Core `ContextSource` port and never supplies Core
   policy, mandatory status, final score, or authority;
 - fails open to safe filesystem/document/Repo Map/Git candidate discovery when
@@ -93,6 +97,10 @@ No new physical package is created. Core imports neither SQLite nor TypeScript.
   loading, generated code, ambiguous aliases, and unsupported syntax.
 - Full rebuild favors simple, auditable freshness over incremental performance.
 - One writer per state directory remains the supported concurrency model.
+- The read transaction closes the internal validation-to-MATCH substitution
+  window. It does not eliminate same-user races on repository paths before the
+  transaction starts or after selected-source verification, nor does it make
+  SQLite a cross-user security boundary.
 
 ## Compatibility
 

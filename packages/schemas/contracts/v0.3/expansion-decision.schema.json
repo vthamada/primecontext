@@ -40,6 +40,13 @@
         "DENIED"
       ]
     },
+    "budget_tier": {
+      "enum": [
+        "INITIAL",
+        "SOFT",
+        "HARD"
+      ]
+    },
     "reason_codes": {
       "type": "array",
       "minItems": 1,

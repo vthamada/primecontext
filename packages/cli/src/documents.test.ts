@@ -251,6 +251,22 @@ test('search rejects a missing or corrupt catalog', async (t) => {
   await assert.rejects(() => docsSearchCommand(root, 'proposal'), /CATALOG_ERROR|VALIDATION_ERROR/);
 });
 
+test('document state commands reject a state directory that is no longer ignored', async (t) => {
+  const root = await repositoryFixture(t);
+  await initCommand(root);
+  const { docsIndexCommand, docsSearchCommand } = await plannedDocumentCommands();
+  await writeFile(join(root, '.gitignore'), '# PrimeContext state exclusion removed\n');
+
+  await assert.rejects(
+    () => docsIndexCommand(root),
+    /state_dir must be ignored/i,
+  );
+  await assert.rejects(
+    () => docsSearchCommand(root, 'proposal'),
+    /state_dir must be ignored/i,
+  );
+});
+
 test('catalog parsing uses a bounded budget that covers the physical contract maximum', () => {
   const overDefaultBudget = JSON.stringify(Array.from({ length: 100_005 }, () => 0));
   assert.throws(

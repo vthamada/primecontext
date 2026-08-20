@@ -73,8 +73,22 @@ export interface CompactHandoff {
 }
 
 export type MetricNumericField =
-  | 'input_tokens' | 'cached_input_tokens' | 'output_tokens' | 'tool_calls' | 'file_reads'
+  | 'input_tokens' | 'cached_input_tokens' | 'output_tokens' | 'agent_output_tokens' | 'tool_calls' | 'file_reads'
   | 'codegraph_calls' | 'context_expansions' | 'duration_ms' | 'selected_context_tokens' | 'rework_count';
+
+export interface MetricRunEnvironment {
+  commit: string;
+  worktree_digest: string;
+  agent: string;
+  model: string;
+  reasoning_effort: string;
+  permissions: string;
+  runtime: string;
+  lockfile_hash: string;
+  time_limit_ms: number;
+  test_command: string;
+  rubric: string;
+}
 
 export interface MetricRecord {
   schema_version: '0.1';
@@ -84,6 +98,7 @@ export interface MetricRecord {
   input_tokens?: number;
   cached_input_tokens?: number;
   output_tokens?: number;
+  agent_output_tokens?: number;
   tool_calls?: number;
   file_reads?: number;
   codegraph_calls?: number;
@@ -95,6 +110,7 @@ export interface MetricRecord {
   completion_status?: 'PASS' | 'FAIL' | 'UNKNOWN';
   rework_count?: number;
   estimated_fields?: MetricNumericField[];
+  run_environment?: MetricRunEnvironment;
 }
 
 export interface DiscoveredPath {

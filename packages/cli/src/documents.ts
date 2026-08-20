@@ -18,10 +18,12 @@ import {
 } from '@primecontext/core';
 import { loadConfig } from './config.js';
 import {
+  assertStateDirectoryIgnored,
   ensureSafeDirectory,
   parseBoundedJson,
   readInternalText,
   repositoryRelativePath,
+  withInternalExclusiveLock,
   writeInternalTextAtomic,
 } from './safe-io.js';
 
@@ -146,7 +148,11 @@ function assertSearchOptions(value: DocsSearchOptions): void {
 export async function docsIndexCommand(root: string): Promise<DocsIndexResult> {
   const resolvedRoot = resolve(root);
   const config = await loadConfig(resolvedRoot);
-  const sourceCollection = await collectDocuments(resolvedRoot, config.exclude);
+  await assertStateDirectoryIgnored(resolvedRoot, config.state_dir);
+  const sourceCollection = await collectDocuments(
+    resolvedRoot,
+    [...new Set([...config.exclude, config.state_dir])],
+  );
   const git = await new NodeGitAdapter().inspect(resolvedRoot);
   const catalog = createDocumentCatalog({
     generated_at: new Date().toISOString(),
@@ -172,7 +178,12 @@ export async function docsIndexCommand(root: string): Promise<DocsIndexResult> {
   const relativePath = catalogRelativePath(resolvedRoot, config.state_dir);
   const directory = relativePath.slice(0, relativePath.lastIndexOf('/'));
   await ensureSafeDirectory(resolvedRoot, directory);
-  await writeInternalTextAtomic(resolvedRoot, relativePath, serialized);
+  await withInternalExclusiveLock(
+    resolvedRoot,
+    `${directory}/catalog.lock`,
+    async () => writeInternalTextAtomic(resolvedRoot, relativePath, serialized),
+    { operation: 'replace-document-catalog' },
+  );
   return {
     catalog_path: relativePath,
     document_count: catalog.summary.document_count,
@@ -199,6 +210,7 @@ export async function docsSearchCommand(
   });
   const resolvedRoot = resolve(root);
   const config = await loadConfig(resolvedRoot);
+  await assertStateDirectoryIgnored(resolvedRoot, config.state_dir);
   const relativePath = catalogRelativePath(resolvedRoot, config.state_dir);
   const serialized = await readInternalText(
     resolvedRoot,
@@ -209,7 +221,10 @@ export async function docsSearchCommand(
     maxValues: MAX_DOCUMENT_CATALOG_VALUES,
   });
   const catalog = assertValidDocumentCatalog(parsed);
-  const sourceCollection = await collectDocuments(resolvedRoot, config.exclude);
+  const sourceCollection = await collectDocuments(
+    resolvedRoot,
+    [...new Set([...config.exclude, config.state_dir])],
+  );
   return searchDocumentCatalog(
     catalog,
     validatedQuery,
